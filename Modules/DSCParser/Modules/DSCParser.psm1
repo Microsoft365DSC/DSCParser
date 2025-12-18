@@ -178,7 +178,7 @@ function ConvertFrom-CIMInstanceToHashtable
                             }
                             catch
                             {
-                                if ($_.Exception.Message -ne "A parameter cannot be found that matches parameter name 'dummyValue'.")
+                                if ($_.Exception.Message -ne "A parameter cannot be found that matches parameter name 'dummyValue'." -and $_.Exception.Message -notlike "Undefined property dummyValue*")
                                 {
                                     throw
                                 }
