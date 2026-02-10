@@ -12,15 +12,17 @@ namespace DSCParser.CSharp
         {
             if (psObject is null) throw new ArgumentNullException(nameof(psObject));
 
-            DscResourceInfo resourceInfo = new();
-            resourceInfo.ResourceType = psObject.ResourceType;
-            resourceInfo.CompanyName = psObject.CompanyName;
-            resourceInfo.FriendlyName = psObject.FriendlyName;
-            resourceInfo.Module = psObject.Module;
-            resourceInfo.Path = psObject.Path;
-            resourceInfo.ParentPath = psObject.ParentPath;
-            resourceInfo.ImplementedAs = Enum.Parse(typeof(ImplementedAsType), psObject.ImplementedAs.ToString());
-            resourceInfo.Name = psObject.Name;
+            DscResourceInfo resourceInfo = new()
+            {
+                ResourceType = psObject.ResourceType,
+                CompanyName = psObject.CompanyName,
+                FriendlyName = psObject.FriendlyName,
+                Module = psObject.Module,
+                Path = psObject.Path,
+                ParentPath = psObject.ParentPath,
+                ImplementedAs = Enum.Parse(typeof(ImplementedAsType), psObject.ImplementedAs.ToString()),
+                Name = psObject.Name
+            };
 
             List<DscResourcePropertyInfo> props = [];
             foreach (object obj in psObject.Properties)
@@ -34,10 +36,12 @@ namespace DSCParser.CSharp
 
         public static DscResourcePropertyInfo MapToDscResourcePropertyInfo(dynamic psObjectPropery)
         {
-            DscResourcePropertyInfo propertyInfo = new();
-            propertyInfo.Name = psObjectPropery.Name;
-            propertyInfo.PropertyType = psObjectPropery.PropertyType;
-            propertyInfo.IsMandatory = psObjectPropery.IsMandatory;
+            DscResourcePropertyInfo propertyInfo = new()
+            {
+                Name = psObjectPropery.Name,
+                PropertyType = psObjectPropery.PropertyType,
+                IsMandatory = psObjectPropery.IsMandatory
+            };
 
             List<string> newValues = [];
             foreach (string value in psObjectPropery.Values)

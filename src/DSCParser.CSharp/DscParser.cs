@@ -125,10 +125,14 @@ namespace DSCParser.CSharp
                 {
                     _ = result.AppendLine($"{childSpacer}{entry["CIMInstance"]}{{");
                 }
+                else if (entry.ContainsKey("ResourceName") && entry.ContainsKey("ResourceInstanceName"))
+                {
+                    _ = result.AppendLine($"{childSpacer}{entry["ResourceName"]} \"{entry["ResourceInstanceName"]}\"");
+                    _ = result.AppendLine($"{childSpacer}{{");
+                }
                 else
                 {
-                    _ = result.AppendLine($"{childSpacer}{entry["ResourceName"]} {entry["ResourceInstanceName"]}");
-                    _ = result.AppendLine($"{childSpacer}{{");
+                    _ = result.AppendLine($"{childSpacer}@{{");
                 }
 
                 List<string> sortedKeys = [.. entry.Keys.Cast<string>().OrderBy(k => k)];
@@ -143,7 +147,7 @@ namespace DSCParser.CSharp
                     _ = result.Append(FormatProperty(property, value, additionalSpaces, childSpacer));
                 }
 
-                _ = result.AppendLine($"{childSpacer}}}");
+                _ = result.Append($"{childSpacer}}}");
             }
 
             return result.ToString();
@@ -426,7 +430,7 @@ namespace DSCParser.CSharp
             return ("", commandAst.ToString());
         }
 
-        private static object? ProcessExpressionAst(ExpressionAst expr, string resourceName, bool includeCimInstanceInfo)
+        private static object ProcessExpressionAst(ExpressionAst expr, string resourceName, bool includeCimInstanceInfo)
         {
             return expr switch
             {
@@ -438,26 +442,17 @@ namespace DSCParser.CSharp
                 MemberExpressionAst member => ProcessMemberExpressionAst(member),
                 // An array like @("value1", "value2")
                 ArrayExpressionAst array => ProcessArrayExpressionAst(array, resourceName, includeCimInstanceInfo),
-                _ => (expr.ToString())
+                // An expandable string like "https://$OrganizationName/"
+                ExpandableStringExpressionAst expString => expString.Value,
+                // A hashtable like @{key=value; key2=value2}
+                HashtableAst hashtable => ProcessHashtableExpressionAst(hashtable),
+                _ => expr.ToString()
             };
         }
 
-        private static object? ProcessCommandExpressionAst(CommandExpressionAst expr, string resourceName, bool includeCimInstanceInfo)
+        private static object ProcessCommandExpressionAst(CommandExpressionAst expr, string resourceName, bool includeCimInstanceInfo)
         {
-            return expr.Expression switch
-            {
-                // A variable like $varName. Is either a normal variable or $true/$false
-                VariableExpressionAst variable => ProcessVariableExpressionAst(variable),
-                // A constant like "stringValue" or 123
-                ConstantExpressionAst constant => ProcessConstantExpressionAst(constant),
-                // A member of an object like $obj.Property. Used for configuration data, e.g. $ConfigurationData.NonNodeData.ApplicationId
-                MemberExpressionAst member => ProcessMemberExpressionAst(member),
-                // An array like @("value1", "value2")
-                ArrayExpressionAst array => ProcessArrayExpressionAst(array, resourceName, includeCimInstanceInfo),
-                // An expandable string like "https://$OrganizationName/"
-                ExpandableStringExpressionAst expString => expString.Value,
-                _ => expr.Expression.ToString()
-            };
+            return ProcessExpressionAst(expr.Expression, resourceName, includeCimInstanceInfo);
         }
 
         private static List<object> ProcessArrayExpressionAst(ArrayExpressionAst arrayAst, string resourceName, bool includeCimInstanceInfo)
@@ -503,41 +498,13 @@ namespace DSCParser.CSharp
                         // or more types of elements
                         case ArrayLiteralAst arrayLiteral:
                             {
-                                return arrayLiteral.Elements.Select(element =>
-                                {
-                                    if (element is ConstantExpressionAst constElement)
-                                    {
-                                        return constElement.Value;
-                                    }
-                                    else if (element is VariableExpressionAst variableElement)
-                                    {
-                                        return variableElement.ToString();
-                                    }
-                                    else if (element is ExpandableStringExpressionAst expStringElement)
-                                    {
-                                        return expStringElement.Value;
-                                    }
-                                    else
-                                    {
-                                        throw new InvalidOperationException($"Unexpected array element type in array literal. The type was: {element.GetType().FullName}");
-                                    }
-                                }).ToList();
+                                return arrayLiteral.Elements
+                                    .Select(element => ProcessExpressionAst(element, resourceName, includeCimInstanceInfo))
+                                    .ToList();
                             }
-                        // Single constant string like @("value1")
-                        case StringConstantExpressionAst constantString:
-                            returnList.Add(constantString.Value);
-                            break;
-                        // Single constant like @(1)
-                        case ConstantExpressionAst constant:
-                            returnList.Add(constant.Value);
-                            break;
-                        // Single variable like @($var1)
-                        case VariableExpressionAst variable:
-                            returnList.Add(variable.ToString());
-                            break;
-                        // Single expandable string like @("https://$OrganizationName/")
-                        case ExpandableStringExpressionAst expString:
-                            returnList.Add(expString.Value);
+                        // Any other type of expression inside the array
+                        case ExpressionAst expression:
+                            returnList.Add(ProcessExpressionAst(expression, resourceName, includeCimInstanceInfo));
                             break;
                         default:
                             break;
@@ -613,6 +580,26 @@ namespace DSCParser.CSharp
 
         private static string ProcessMemberExpressionAst(MemberExpressionAst memberAst) => memberAst.ToString();
 
+        private static Hashtable ProcessHashtableExpressionAst(HashtableAst hashtableAst)
+        {
+            Hashtable result = [];
+            foreach (Tuple<ExpressionAst, StatementAst> kvp in hashtableAst.KeyValuePairs)
+            {
+                string key = kvp.Item1.ToString();
+                object? value = null;
+                if (kvp.Item2 is PipelineAst pip)
+                {
+                    value = ProcessPipelineAst(pip, "", true);
+                }
+                else if (kvp.Item2 is DynamicKeywordStatementAst dynamicStatement)
+                {
+                    value = ProcessDynamicKeywordStatementAst(dynamicStatement, "", true);
+                }
+                result[key] = value;
+            }
+            return result;
+        }
+
         private static List<DscResourceInstance> UpdateWithMetadata(Token[] tokens, List<DscResourceInstance> parsedObjects)
         {
             // Find Node token position
@@ -678,7 +665,8 @@ namespace DSCParser.CSharp
             switch (value)
             {
                 case string strValue:
-                    if (strValue.StartsWith("$"))
+                    // If the string starts with a $ and does not contain any spaces, we treat it as a variable and do not wrap it in quotes
+                    if (strValue.StartsWith("$") && !strValue.Contains(' '))
                     {
                         _ = result.AppendLine($"{childSpacer}    {property}{additionalSpaces}= {strValue}");
                     }
@@ -688,7 +676,7 @@ namespace DSCParser.CSharp
                     }
                     else
                     {
-                        string escaped = strValue.Replace("\"", "`\"");
+                        string escaped = strValue.Replace("`", "``").Replace("\"", "`\"");
                         _ = result.AppendLine($"{childSpacer}    {property}{additionalSpaces}= \"{escaped}\"");
                     }
                     break;
@@ -710,40 +698,73 @@ namespace DSCParser.CSharp
                         break;
                     }
 
-                    if (arrayValue.GetValue(0) is Hashtable ht)
+                    List<string> arrayItemsAsString = [];
+                    bool isSimpleArray = true;
+                    foreach (object item in arrayValue)
                     {
-                        _ = result.AppendLine();
-                        ConvertFromDscObject(arrayValue.Cast<Hashtable>(), (childSpacer.Length / 4) + 2)
-                            .Split([Environment.NewLine], StringSplitOptions.None)
-                            .Where(line => !string.IsNullOrWhiteSpace(line))
-                            .ToList()
-                            .ForEach(line => _ = result.AppendLine(line));
-                        _ = result.AppendLine($"{childSpacer}    )");
-                        break;
+                        if (item is string or int or bool)
+                        {
+                            arrayItemsAsString.Add(item is string s ? $"\"{s.Replace("`", "``").Replace("\"", "`\"")}\"" : item.ToString());
+                        }
+                        else if (item is Hashtable ht)
+                        {
+                            string converted = ConvertFromDscObject([ht], (childSpacer.Length / 4) + 2);
+                            arrayItemsAsString.Add(converted.TrimEnd());
+                            isSimpleArray = false;
+                        }
+                        else
+                        {
+                            arrayItemsAsString.Add($"{new string(' ', childSpacer.Length + 8)}{item.ToString() ?? string.Empty}");
+                        }
                     }
 
-                    if (arrayValue.GetValue(0) is string or int or bool)
+                    if (isSimpleArray && arrayItemsAsString.Count == 1)
                     {
-                        IEnumerable<string> items = arrayValue.Cast<object>().Select(item => $"\"{item}\"");
-                        _ = result.Append(string.Join(",", items));
+                        _ = result.Append(arrayItemsAsString[0]);
                         _ = result.AppendLine(")");
+                    }
+                    else
+                    {
+                        _ = result.AppendLine();
+                        _ = result.AppendLine(string.Join(Environment.NewLine, arrayItemsAsString.Select(line =>
+                        {
+                            if (!line.StartsWith(new string(' ', childSpacer.Length + 8)))
+                            {
+                                return $"{new string(' ', childSpacer.Length + 8)}{line.TrimStart()}";
+                            }
+                            return line;
+                        })));
+                        _ = result.AppendLine($"{childSpacer}    )");
                     }
                     break;
 
                 case Hashtable hashtable:
                     _ = result.Append($"{childSpacer}    {property}{additionalSpaces}= ");
-                    ConvertFromDscObject([hashtable], (childSpacer.Length / 4) + 1)
-                        .Split([Environment.NewLine], StringSplitOptions.None)
-                        .Where(line => !string.IsNullOrWhiteSpace(line))
-                        .ToList()
-                        .ForEach(line =>
-                        {
-                            // Trim the first spaces to align properly for only the first declaration
-                            string regex = $"^\\s{{{childSpacer.Length}}}\\s{{4}}\\w*{{";
-                            if (Regex.IsMatch(line, regex))
-                                line = line.Replace(childSpacer + "    ", "");
-                            _ = result.AppendLine(line);
-                        });
+                    if (hashtable.ContainsKey("CIMInstance") || hashtable.ContainsKey("ResourceInstanceName"))
+                    {
+                        ConvertFromDscObject([hashtable], (childSpacer.Length / 4) + 1)
+                            .Split([Environment.NewLine], StringSplitOptions.None)
+                            .Where(line => !string.IsNullOrWhiteSpace(line))
+                            .ToList()
+                            .ForEach(line =>
+                            {
+                                // Trim the first spaces to align properly for only the first declaration
+                                string regex = $"^\\s{{{childSpacer.Length}}}\\s{{4}}\\w*{{";
+                                if (Regex.IsMatch(line, regex))
+                                    line = line.Replace(childSpacer + "    ", "");
+                                _ = result.AppendLine(line);
+                            });
+                    }
+                    else
+                    {
+                        _ = result.Append("@");
+                        List<string> lines = ConvertFromDscObject([hashtable], childSpacer.Length / 4 + 1)
+                            .Split([Environment.NewLine], StringSplitOptions.None)
+                            .Where(line => !string.IsNullOrWhiteSpace(line))
+                            .ToList();
+                        lines[0] = lines[0].TrimStart();
+                        lines.ForEach(line => _ = result.AppendLine(line));
+                    }
                     break;
 
                 default:

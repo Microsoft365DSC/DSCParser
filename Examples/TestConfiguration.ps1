@@ -2,8 +2,6 @@
 
 Configuration TestConfiguration
 {
-    Import-DscResource -ModuleName PSDesiredStateConfiguration
-
     Node localhost
     {
         File TestFile1
