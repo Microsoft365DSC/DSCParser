@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -28,7 +29,7 @@ namespace DSCParser.CSharp
         /// </summary>
         public Hashtable ToHashtable()
         {
-            Hashtable result = new()
+            Hashtable result = new(StringComparer.OrdinalIgnoreCase)
             {
                 ["ResourceName"] = ResourceName,
                 ["ResourceInstanceName"] = ResourceInstanceName
@@ -53,7 +54,7 @@ namespace DSCParser.CSharp
 
             if (value is Dictionary<string, object?> dict)
             {
-                Hashtable ht = [];
+                Hashtable ht = new(StringComparer.OrdinalIgnoreCase);
                 foreach (KeyValuePair<string, object?> kvp in dict)
                 {
                     ht[kvp.Key] = ConvertToHashtableRecursive(kvp.Value);

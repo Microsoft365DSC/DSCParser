@@ -29,7 +29,7 @@ namespace DSCParser.PSDSC
         /// </summary>
         public static DscResourceInfo? GetResourceFromKeyword(
             DynamicKeyword keyword,
-            List<WildcardPattern> patterns,
+            string[] patterns,
             PSModuleInfo[] modules,
             string[] dscResourceNames)
         {
@@ -141,7 +141,7 @@ namespace DSCParser.PSDSC
         /// Gets composite resource from configuration info
         /// </summary>
         public static DscResourceInfo? GetCompositeResource(
-            List<WildcardPattern> patterns,
+            string[] patterns,
             ConfigurationInfo configInfo,
             string[] ignoreParameters,
             PSModuleInfo[] modules)
@@ -268,7 +268,7 @@ namespace DSCParser.PSDSC
                 return null;
             }
 
-            var result = method.Invoke(null, new object[] { className });
+            var result = method.Invoke(null, [className]);
             return result as List<string>;
         }
     }

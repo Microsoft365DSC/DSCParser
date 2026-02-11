@@ -39,6 +39,7 @@ namespace DSCParser.PSDSC
             bool includeCompositeResources = true)
         {
             var resources = new List<DscResourceInfo>();
+            resourceNames ??= [];
 
             try
             {
@@ -54,9 +55,6 @@ namespace DSCParser.PSDSC
                     ImportResourcesFromModules(modules);
                 }
 
-                // Get patterns for filtering
-                var patterns = DscResourceHelpers.GetPatterns(resourceNames);
-
                 // Get resources from CIM cache
                 var keywords = GetCachedKeywords(moduleName);
                 var dscResourceNames = keywords.Select(k => k.Keyword).ToArray();
@@ -66,7 +64,7 @@ namespace DSCParser.PSDSC
                 {
                     var resource = ResourceProcessor.GetResourceFromKeyword(
                         keyword,
-                        patterns,
+                        resourceNames,
                         modules ?? [],
                         dscResourceNames);
 
@@ -84,7 +82,7 @@ namespace DSCParser.PSDSC
                     foreach (var config in configurations)
                     {
                         var resource = ResourceProcessor.GetCompositeResource(
-                            patterns,
+                            resourceNames,
                             config,
                             IgnoreResourceParameters,
                             modules ?? []);

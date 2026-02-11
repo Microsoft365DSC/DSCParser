@@ -177,7 +177,7 @@ if ([System.String]::IsNullOrEmpty($RepositoryRoot)) {
     $RepositoryRoot = Split-Path -Path $PSScriptRoot -Parent
 }
 
-$projects = Get-ChildItem -Path (Join-Path -Path $RepositoryRoot -ChildPath 'src') -Filter "*.csproj" -File -Recurse | ForEach-Object { $_.Name }
+$projects = Get-ChildItem -Path (Join-Path -Path $RepositoryRoot -ChildPath 'src') -Filter "*.csproj" -File -Recurse | Where-Object Name -NotLike "*.Tests.csproj" | ForEach-Object { $_.Name }
 
 foreach ($project in $projects) {
     Build-Project -ProjectName $project.Replace(".csproj", "") -Configuration $Configuration -RepositoryRoot $RepositoryRoot -SkipClean:$SkipClean

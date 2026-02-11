@@ -55,41 +55,18 @@ namespace DSCParser.PSDSC
         public static bool IsHiddenResource(string resourceName) => HiddenResources.Contains(resourceName);
 
         /// <summary>
-        /// Gets patterns for wildcard matching from resource names
-        /// </summary>
-        public static List<WildcardPattern> GetPatterns(string[]? names)
-        {
-            var patterns = new List<WildcardPattern>();
-
-            if (names is null || names.Length == 0)
-            {
-                return patterns;
-            }
-
-            foreach (var name in names)
-            {
-                if (!string.IsNullOrWhiteSpace(name))
-                {
-                    patterns.Add(new WildcardPattern(name, WildcardOptions.IgnoreCase));
-                }
-            }
-
-            return patterns;
-        }
-
-        /// <summary>
         /// Checks whether an input name matches one of the patterns
         /// </summary>
-        public static bool IsPatternMatched(List<WildcardPattern> patterns, string name)
+        public static bool IsPatternMatched(string[] patterns, string name)
         {
-            if (patterns is null || patterns.Count == 0)
+            if (patterns is null || patterns.Length == 0)
             {
                 return true;
             }
 
             foreach (var pattern in patterns)
             {
-                if (pattern.IsMatch(name))
+                if (Regex.IsMatch(name, pattern, RegexOptions.IgnoreCase))
                 {
                     return true;
                 }
