@@ -8,109 +8,110 @@
 
 @{
 
-# Script module or binary module file associated with this manifest.
-# RootModule = ''
+    # Script module or binary module file associated with this manifest.
+    RootModule = 'DSCParser.psm1'
 
-# Version number of this module.
-ModuleVersion = '2.0.0.21'
+    # Version number of this module.
+    ModuleVersion = '2.0.0.21'
 
-# ID used to uniquely identify this module
-GUID = 'e168239a-233d-468d-9025-d6dfc0e4e2b6'
+    # ID used to uniquely identify this module
+    GUID = 'e168239a-233d-468d-9025-d6dfc0e4e2b6'
 
-# Author of this module
-Author = 'Microsoft Corporation'
+    # Author of this module
+    Author = 'Microsoft Corporation'
 
-# Company or vendor of this module
-CompanyName = 'Microsoft Corporation'
+    # Company or vendor of this module
+    CompanyName = 'Microsoft Corporation'
 
-# Copyright statement for this module
-Copyright = '(c) 2018-2025 Microsoft Corporation. All rights reserved.'
+    # Copyright statement for this module
+    Copyright = '(c) 2018-2025 Microsoft Corporation. All rights reserved.'
 
-# Description of the functionality provided by this module
-Description = 'This module allows for the parsing of a DSC Configuration script into PSObject for analysis'
+    # Description of the functionality provided by this module
+    Description = 'This module allows for the parsing of a DSC Configuration script into PSObject for analysis'
 
-# Minimum version of the Windows PowerShell engine required by this module
-PowerShellVersion = '5.1'
+    # Minimum version of the Windows PowerShell engine required by this module
+    PowerShellVersion = '5.1'
 
-# Name of the Windows PowerShell host required by this module
-# PowerShellHostName = ''
+    # Name of the Windows PowerShell host required by this module
+    # PowerShellHostName = ''
 
-# Minimum version of the Windows PowerShell host required by this module
-# PowerShellHostVersion = ''
+    # Minimum version of the Windows PowerShell host required by this module
+    # PowerShellHostVersion = ''
 
-# Minimum version of Microsoft .NET Framework required by this module
-# DotNetFrameworkVersion = ''
+    # Minimum version of Microsoft .NET Framework required by this module
+    # DotNetFrameworkVersion = ''
 
-# Minimum version of the common language runtime (CLR) required by this module
-# CLRVersion = ''
+    # Minimum version of the common language runtime (CLR) required by this module
+    # CLRVersion = ''
 
-# Processor architecture (None, X86, Amd64) required by this module
-# ProcessorArchitecture = ''
+    # Processor architecture (None, X86, Amd64) required by this module
+    # ProcessorArchitecture = ''
 
-# Modules that must be imported into the global environment prior to importing this module
-# RequiredModules = @()
+    # Modules that must be imported into the global environment prior to importing this module
+    # RequiredModules = @()
 
-# Assemblies that must be loaded prior to importing this module
-# RequiredAssemblies = @()
+    # Assemblies that must be loaded prior to importing this module
+    # RequiredAssemblies = @()
 
-# Script files (.ps1) that are run in the caller's environment prior to importing this module.
-# ScriptsToProcess = @()
+    # Script files (.ps1) that are run in the caller's environment prior to importing this module.
+    # ScriptsToProcess = @()
 
-# Type files (.ps1xml) to be loaded when importing this module
-# TypesToProcess = @()
+    # Type files (.ps1xml) to be loaded when importing this module
+    # TypesToProcess = @()
 
-# Format files (.ps1xml) to be loaded when importing this module
-# FormatsToProcess = @()
+    # Format files (.ps1xml) to be loaded when importing this module
+    # FormatsToProcess = @()
 
-# Modules to import as nested modules of the module specified in RootModule/ModuleToProcess
-NestedModules = @('Modules/DSCParser.psm1')
+    # Modules to import as nested modules of the module specified in RootModule/ModuleToProcess
+    NestedModules = @('bin\DSCParser.PSDSC.psd1')
 
-# Functions to export from this module
-FunctionsToExport = @('ConvertTo-DSCObject',
-                      'ConvertFrom-DSCObject')
+    # Functions to export from this module
+    FunctionsToExport = @(
+        'ConvertTo-DSCObject',
+        'ConvertFrom-DSCObject'
+    )
 
-# Cmdlets to export from this module
-CmdletsToExport = @()
+    # Cmdlets to export from this module
+    CmdletsToExport = @('Get-DscResourceV2')
 
-# Variables to export from this module
-#VariablesToExport = '*'
+    # Variables to export from this module
+    #VariablesToExport = '*'
 
-# Aliases to export from this module
-AliasesToExport = @()
+    # Aliases to export from this module
+    AliasesToExport = @()
 
-# List of all modules packaged with this module
-# ModuleList = @()
+    # List of all modules packaged with this module
+    # ModuleList = @()
 
-# List of all files packaged with this module
-# FileList = @()
+    # List of all files packaged with this module
+    # FileList = @()
 
-# HelpInfo URI of this module
-# HelpInfoURI = ''
+    # HelpInfo URI of this module
+    # HelpInfoURI = ''
 
-# Default prefix for commands exported from this module. Override the default prefix using Import-Module -prefix.
-# DefaultCommandPrefix = ''
+    # Default prefix for commands exported from this module. Override the default prefix using Import-Module -prefix.
+    # DefaultCommandPrefix = ''
 
-# Private data to pass to the module specified in RootModule/ModuleToProcess. This may also contain a PSData hashtable with additional module metadata used by PowerShell.
-PrivateData = @{
+    # Private data to pass to the module specified in RootModule/ModuleToProcess. This may also contain a PSData hashtable with additional module metadata used by PowerShell.
+    PrivateData = @{
 
-    PSData = @{
+        PSData = @{
 
-        # Tags applied to this module. These help with module discovery in online galleries.
-        Tags = 'DesiredStateConfiguration', 'DSC'
+            # Tags applied to this module. These help with module discovery in online galleries.
+            Tags = 'DesiredStateConfiguration', 'DSC'
 
-        # A URL to the license for this module.
-        LicenseUri = 'https://github.com/Microsoft/DSCParser/blob/master/LICENSE'
+            # A URL to the license for this module.
+            LicenseUri = 'https://github.com/Microsoft/DSCParser/blob/master/LICENSE'
 
-        # A URL to the main website for this project.
-        ProjectUri = 'https://github.com/Microsoft/DSCParser'
+            # A URL to the main website for this project.
+            ProjectUri = 'https://github.com/Microsoft/DSCParser'
 
-        # A URL to an icon representing this module.
-        IconUri = 'https://github.com/Microsoft/DSCParser/blob/master/Images/DSCParser.png?raw=true'
+            # A URL to an icon representing this module.
+            IconUri = 'https://github.com/Microsoft/DSCParser/blob/master/Images/DSCParser.png?raw=true'
 
-        # ReleaseNotes of this module
-        ReleaseNotes = '* Fixes nested CIM instances and array outputs.'
-    } # End of PSData hashtable
+            # ReleaseNotes of this module
+            ReleaseNotes = '* Fixes nested CIM instances and array outputs.'
+        } # End of PSData hashtable
 
-} # End of PrivateData hashtable
+    } # End of PrivateData hashtable
 }
-
