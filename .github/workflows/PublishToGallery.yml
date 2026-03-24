@@ -1,0 +1,39 @@
+name: Publish to PowerShell Gallery
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  PublishToGallery:
+    runs-on: windows-latest
+
+    # Only when run from the main repo
+    if: github.repository == 'microsoft/DSCParser'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build PowerShell Module
+        shell: pwsh
+        run: |
+          & ./Utilities/Build.ps1 -Configuration Release
+
+      - name: Validate Module Manifest
+        shell: pwsh
+        run: |
+          Test-ModuleManifest -Path ./PowerShellModule/DSCParser.psd1
+
+      - name: Publish
+        shell: pwsh
+        env:
+          PUBLIC_NUGETAPIKEY: ${{ secrets.NugetAPIKey }}
+        run: |
+          Publish-Module -Path "./PowerShellModule/" -NugetAPIKey $env:PUBLIC_NUGETAPIKEY
