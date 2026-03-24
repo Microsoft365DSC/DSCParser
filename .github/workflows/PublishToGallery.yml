@@ -34,6 +34,6 @@ jobs:
       - name: Publish
         shell: pwsh
         env:
-          PUBLIC_NUGETAPIKEY: ${{ secrets.NugetAPIKey }}
+          PUBLIC_NUGETAPIKEY: ${{ secrets.NUGETAPIKEY }}
         run: |
           Publish-Module -Path "./PowerShellModule/" -NugetAPIKey $env:PUBLIC_NUGETAPIKEY
