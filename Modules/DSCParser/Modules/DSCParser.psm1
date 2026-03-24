@@ -118,7 +118,7 @@ function ConvertTo-DSCObject
 
         [Parameter(ParameterSetName = 'Path')]
         [Parameter(ParameterSetName = 'Content')]
-        [Microsoft.PowerShell.DesiredStateConfiguration.DscResourceInfo[]]
+        [System.Object[]]
         $DscResourceInfo
     )
 

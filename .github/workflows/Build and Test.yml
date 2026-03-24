@@ -1,0 +1,61 @@
+name: Build and Test
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - master
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    permissions: write-all
+
+    # Only when run from the main repo
+    if: github.repository == 'Microsoft365DSC/DSCParser'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore Dependencies
+        shell: pwsh
+        run: |
+          dotnet restore ./src/DSCParser.sln
+
+      - name: Build Solution
+        shell: pwsh
+        run: |
+          dotnet build ./src/DSCParser.sln -c Release --no-restore
+
+      - name: Run C# Tests
+        shell: pwsh
+        run: |
+          dotnet test ./src/DSCParser.Tests/DSCParser.Tests.csproj -c Release --no-build --logger "trx;LogFileName=TestResults.trx"
+
+      - name: Build PowerShell Module
+        shell: pwsh
+        run: |
+          & ./Utilities/Build.ps1 -Configuration Release
+
+      - name: Validate Module Manifest
+        shell: pwsh
+        run: |
+          Test-ModuleManifest -Path ./PowerShellModule/DSCParser.psd1
+
+      - name: Validate Module Import
+        shell: pwsh
+        run: |
+          Import-Module ./PowerShellModule/DSCParser.psd1 -Force -ErrorAction Stop
+          $exportedFunctions = (Get-Module DSCParser).ExportedFunctions.Keys
+          if ($exportedFunctions.Count -eq 0)
+          {
+              throw "No functions exported from the DSCParser module."
+          }
+          Write-Host "Exported functions: $($exportedFunctions -join ', ')"
