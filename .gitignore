@@ -8,8 +8,8 @@
 *.user
 *.userosscache
 *.sln.docstates
-PowerShellModule
-DSCParser
+PowerShellModule/
+DSCParser/
 
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
