@@ -12,7 +12,7 @@
     RootModule = 'DSCParser.psm1'
 
     # Version number of this module.
-    ModuleVersion = '3.0.0.0'
+    ModuleVersion = '3.0.0.1'
 
     # ID used to uniquely identify this module
     GUID = 'e168239a-233d-468d-9025-d6dfc0e4e2b6'
