@@ -2,7 +2,7 @@
 
 param(
     [Parameter()]
-    [string]$ModulePath = (Join-Path $PSScriptRoot '..\PowerShellModule\DSCParser.CSharp.psd1')
+    [string]$ModulePath = (Join-Path $PSScriptRoot '..\DSCParser\DSCParser.CSharp.psd1')
 )
 
 $ErrorActionPreference = 'Stop'

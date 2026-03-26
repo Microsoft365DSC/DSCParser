@@ -90,7 +90,7 @@ function Build-Project {
 
     $projectPath = Join-Path -Path $RepositoryRoot -ChildPath "src\$ProjectName\$ProjectName.csproj"
     $outputDir = Join-Path -Path $RepositoryRoot -ChildPath "src\$ProjectName\bin\$Configuration\netstandard2.0"
-    $targetDir = Join-Path -Path $RepositoryRoot -ChildPath 'PowerShellModule\bin'
+    $targetDir = Join-Path -Path $RepositoryRoot -ChildPath 'DSCParser\bin'
 
     Write-Host "Building $ProjectName..." -ForegroundColor Cyan
     Write-Host "Repository Root: $RepositoryRoot" -ForegroundColor Gray
@@ -183,8 +183,8 @@ foreach ($project in $projects) {
     Build-Project -ProjectName $project.Replace(".csproj", "") -Configuration $Configuration -RepositoryRoot $RepositoryRoot -SkipClean:$SkipClean
 }
 
-# Copy DSCParser.psd1 and DSCParser.psdm1 to PowerShellModule folder
+# Copy DSCParser.psd1 and DSCParser.psdm1 to DSCParser folder
 $moduleSourcePath = Join-Path -Path $RepositoryRoot -ChildPath 'Modules\DSCParser'
-$moduleTargetPath = Join-Path -Path $RepositoryRoot -ChildPath 'PowerShellModule'
+$moduleTargetPath = Join-Path -Path $RepositoryRoot -ChildPath 'DSCParser'
 Copy-Item -Path "$($moduleSourcePath)\DSCParser.psd1" -Destination (Join-Path -Path $moduleTargetPath -ChildPath 'DSCParser.psd1') -Force
 Copy-Item -Path "$($moduleSourcePath)\Modules\DSCParser.psm1" -Destination (Join-Path -Path $moduleTargetPath -ChildPath 'DSCParser.psm1') -Force
