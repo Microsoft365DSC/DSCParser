@@ -47,12 +47,12 @@ jobs:
       - name: Validate Module Manifest
         shell: pwsh
         run: |
-          Test-ModuleManifest -Path ./PowerShellModule/DSCParser.psd1
+          Test-ModuleManifest -Path ./DSCParser/DSCParser.psd1
 
       - name: Validate Module Import
         shell: pwsh
         run: |
-          Import-Module ./PowerShellModule/DSCParser.psd1 -Force -ErrorAction Stop
+          Import-Module ./DSCParser/DSCParser.psd1 -Force -ErrorAction Stop
           $exportedFunctions = (Get-Module DSCParser).ExportedFunctions.Keys
           if ($exportedFunctions.Count -eq 0)
           {

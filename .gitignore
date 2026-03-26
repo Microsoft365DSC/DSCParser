@@ -9,6 +9,7 @@
 *.userosscache
 *.sln.docstates
 PowerShellModule
+DSCParser
 
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs

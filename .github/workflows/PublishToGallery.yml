@@ -29,11 +29,11 @@ jobs:
       - name: Validate Module Manifest
         shell: pwsh
         run: |
-          Test-ModuleManifest -Path ./PowerShellModule/DSCParser.psd1
+          Test-ModuleManifest -Path ./DSCParser/DSCParser.psd1
 
       - name: Publish
         shell: pwsh
         env:
           PUBLIC_NUGETAPIKEY: ${{ secrets.NUGETAPIKEY }}
         run: |
-          Publish-Module -Path "./PowerShellModule/" -NugetAPIKey $env:PUBLIC_NUGETAPIKEY
+          Publish-Module -Path "./DSCParser/" -NugetAPIKey $env:PUBLIC_NUGETAPIKEY
