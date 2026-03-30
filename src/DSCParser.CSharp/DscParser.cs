@@ -148,6 +148,7 @@ namespace DSCParser.CSharp
                 }
 
                 _ = result.Append($"{childSpacer}}}");
+                _ = result.Append(Environment.NewLine);
             }
 
             return result.ToString();
