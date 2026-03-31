@@ -127,6 +127,12 @@ function ConvertTo-DSCObject
         throw "DSCParser.CSharp assembly is not loaded. Module initialization failed."
     }
 
+    # Fully qualify path
+    if ($PSCmdlet.ParameterSetName -eq 'Path')
+    {
+        $Path = (Resolve-Path -Path $Path).Path
+    }
+
     try
     {
         if ($null -eq $Script:DscResourceCache -and -not $PSBoundParameters.ContainsKey('DscResourceInfo'))
@@ -208,6 +214,10 @@ function ConvertFrom-DSCObject
         $ChildLevel = 0
     )
 
+    begin
+    {
+        $result = [System.Collections.Generic.List[System.String]]::new($DSCResources.Count)
+    }
     process
     {
         if (-not $Script:AssemblyLoaded)
@@ -217,13 +227,16 @@ function ConvertFrom-DSCObject
 
         try
         {
-            $result = [DSCParser.CSharp.DscParser]::ConvertFromDscObject($DSCResources, $ChildLevel)
-            return $result
+            $result.Add([DSCParser.CSharp.DscParser]::ConvertFromDscObject($DSCResources, $ChildLevel))
         }
         catch
         {
             Write-Error "Error converting DSC objects: $_"
             throw
         }
+    }
+    end
+    {
+        return [System.String]::Join("", $result)
     }
 }
