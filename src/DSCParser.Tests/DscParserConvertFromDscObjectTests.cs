@@ -358,5 +358,23 @@ public class DscParserConvertFromDscObjectTests
         Assert.DoesNotContain(lines, l => l.Trim().StartsWith("ResourceInstanceName ") && l.Contains('='));
     }
 
+    [Fact]
+    public void ConvertFromDscObject_ShouldAlwaysEndWithNewLine()
+    {
+        var entries = new List<Hashtable>
+        {
+            new()
+            {
+                ["ResourceName"] = "MSFT_Test",
+                ["ResourceInstanceName"] = "Instance1",
+                ["Ensure"] = "Present"
+            }
+        };
+
+        string result = DscParser.ConvertFromDscObject(entries, 0);
+
+        Assert.EndsWith(Environment.NewLine, result);
+    }
+
     #endregion
 }
