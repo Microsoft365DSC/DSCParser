@@ -70,7 +70,6 @@ namespace DSCParser.CSharp
             {
                 ps.AddCommand("Get-Module")
                     .AddParameter("Name", module)
-                    .AddParameter("All")
                     .AddParameter("ListAvailable");
 
                 Collection<PSObject> moduleInfo = ps.Invoke();
