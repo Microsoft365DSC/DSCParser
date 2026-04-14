@@ -172,7 +172,7 @@ namespace DSCParser.PSDSC
         {
             try
             {
-                using var ps = System.Management.Automation.PowerShell.Create();
+                using PowerShell ps = PowerShell.Create();
                 if (!string.IsNullOrEmpty(moduleName))
                 {
                     _ = ps.AddCommand("Get-Module")
@@ -345,7 +345,7 @@ namespace DSCParser.PSDSC
         {
             try
             {
-                using var ps = System.Management.Automation.PowerShell.Create();
+                using PowerShell ps = PowerShell.Create();
                 _ = ps.AddCommand("Get-Command")
                   .AddParameter("CommandType", "Configuration");
 
