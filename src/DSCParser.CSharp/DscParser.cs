@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Management.Automation;
 using System.Management.Automation.Language;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -57,8 +58,47 @@ namespace DSCParser.CSharp
             string dscContent = string.IsNullOrEmpty(content) ? File.ReadAllText(path!) : content;
             string errorPrefix = string.IsNullOrEmpty(path) ? string.Empty : $"{path} - ";
 
+            List<string> modulesToRemoveVersionFrom = dscResourcesConverted
+                .Select(r => r.Module?.Name)
+                .Where(m => m is not null)
+                .Distinct()
+                .ToList();
+
+            using PowerShell ps = PowerShell.Create();
+            List<string> modulesWithMultipleVersions = [];
+            foreach (string module in modulesToRemoveVersionFrom)
+            {
+                ps.AddCommand("Get-Module")
+                    .AddParameter("Name", module)
+                    .AddParameter("ListAvailable");
+
+                Collection<PSObject> moduleInfo = ps.Invoke();
+                HashSet<string> versionsFound = new(StringComparer.InvariantCultureIgnoreCase);
+                foreach (PSObject mod in moduleInfo)
+                {
+                    string version = mod.Members["Version"]?.Value?.ToString() ?? string.Empty;
+                    if (!string.IsNullOrEmpty(version))
+                    {
+                        _ = versionsFound.Add(version);
+                    }
+                }
+                if (versionsFound.Count > 1)
+                {
+                    modulesWithMultipleVersions.Add(module);
+                }
+                ps.Commands.Clear();
+            }
+
+            foreach (string module in modulesWithMultipleVersions)
+            {
+                if (modulesToRemoveVersionFrom.Contains(module))
+                {
+                    _ = modulesToRemoveVersionFrom.Remove(module);
+                }
+            }
+
             // Remove module version information
-            dscContent = RemoveModuleVersionInfo(dscContent);
+            dscContent = RemoveModuleVersionInfo(dscContent, modulesToRemoveVersionFrom);
 
             // Initialize CIM classes cache
             // InitializeCimClasses();
@@ -154,21 +194,34 @@ namespace DSCParser.CSharp
             return result.ToString();
         }
 
-        private static string RemoveModuleVersionInfo(string content)
+        private static string RemoveModuleVersionInfo(string content, List<string>? uniqueModules = null)
         {
-            int start = content.IndexOf("import-dscresource", StringComparison.CurrentCultureIgnoreCase);
-            if (start >= 0)
+            int start = 0;
+            do
             {
-                int end = content.IndexOf("\n", start);
-                if (end > start)
+                start = content.IndexOf("import-dscresource", start, StringComparison.CurrentCultureIgnoreCase);
+                if (start >= 0)
                 {
-                    start = content.IndexOf("-moduleversion", start, StringComparison.CurrentCultureIgnoreCase);
-                    if (start >= 0 && start < end)
+                    int end = content.IndexOf("\n", start);
+                    if (end > start)
                     {
-                        content = content.Remove(start, end - start);
+                        foreach (string module in uniqueModules ?? [])
+                        {
+                            int moduleIndex = content.IndexOf(module, start, StringComparison.CurrentCultureIgnoreCase);
+                            if (moduleIndex >= 0 && moduleIndex < end)
+                            {
+                                start = content.IndexOf("-moduleversion", start, StringComparison.CurrentCultureIgnoreCase);
+                                if (start >= 0 && start < end)
+                                {
+                                    content = content.Remove(start, end - start);
+                                    break;
+                                }
+                            }
+                        }
+                        start += 1;
                     }
                 }
-            }
+            } while (start >= 0);
             return content;
         }
 
@@ -195,37 +248,43 @@ namespace DSCParser.CSharp
         private static List<Dictionary<string, object>> GetModulesToLoad(ConfigurationDefinitionAst configAst)
         {
             List<Dictionary<string, object>> modulesToLoad = [];
-            ReadOnlyCollection<StatementAst> statements = configAst.Body.ScriptBlock.EndBlock.Statements;
+            List<DynamicKeywordStatementAst> statements = configAst.Body.ScriptBlock.EndBlock.Statements
+                .Select(statement => statement as DynamicKeywordStatementAst)
+                .Where(statement => statement is not null).ToList();
 
-            foreach (CommandAst statement in statements.OfType<CommandAst>())
+            foreach (DynamicKeywordStatementAst statement in statements)
             {
-                if (statement.GetCommandName() == "Import-DSCResource")
+                foreach (CommandElementAst command in statement.CommandElements)
                 {
-                    Dictionary<string, object> currentModule = [];
-                    for (int i = 0; i < statement.CommandElements.Count; i++)
+                    StringConstantExpressionAst? expression = command as StringConstantExpressionAst;
+                    if (expression?.Value.Equals("Import-DSCResource", StringComparison.OrdinalIgnoreCase) ?? false )
                     {
-                        if (statement.CommandElements[i] is CommandParameterAst param)
+                        Dictionary<string, object> currentModule = [];
+                        for (int i = 0; i < statement.CommandElements.Count; i++)
                         {
-                            if (param.ParameterName == "ModuleName" && i + 1 < statement.CommandElements.Count)
+                            if (statement.CommandElements[i] is CommandParameterAst param)
                             {
-                                if (statement.CommandElements[i + 1] is StringConstantExpressionAst moduleName)
+                                if (param.ParameterName == "ModuleName" && i + 1 < statement.CommandElements.Count)
                                 {
-                                    currentModule["ModuleName"] = moduleName.Value;
+                                    if (statement.CommandElements[i + 1] is StringConstantExpressionAst moduleName)
+                                    {
+                                        currentModule["ModuleName"] = moduleName.Value;
+                                    }
                                 }
-                            }
-                            else if (param.ParameterName == "ModuleVersion" && i + 1 < statement.CommandElements.Count)
-                            {
-                                if (statement.CommandElements[i + 1] is StringConstantExpressionAst moduleVersion)
+                                else if (param.ParameterName == "ModuleVersion" && i + 1 < statement.CommandElements.Count)
                                 {
-                                    currentModule["ModuleVersion"] = moduleVersion.Value;
+                                    if (statement.CommandElements[i + 1] is StringConstantExpressionAst moduleVersion)
+                                    {
+                                        currentModule["ModuleVersion"] = moduleVersion.Value;
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    if (currentModule.Count > 0)
-                    {
-                        modulesToLoad.Add(currentModule);
+                        if (currentModule.Count > 0)
+                        {
+                            modulesToLoad.Add(currentModule);
+                        }
                     }
                 }
             }
@@ -238,9 +297,9 @@ namespace DSCParser.CSharp
             allDscResources.Where(r =>
                 modulesToLoad.Any(m =>
                     m.ContainsKey("ModuleName") &&
-                    r.Module.Name.Equals(m["ModuleName"].ToString(), StringComparison.OrdinalIgnoreCase) &&
+                    (r.Module?.Name.Equals(m["ModuleName"].ToString(), StringComparison.OrdinalIgnoreCase) ?? false) &&
                     (!m.ContainsKey("ModuleVersion") ||
-                     r.Module.Version.Equals(new(m["ModuleVersion"].ToString())))
+                     (r.Module?.Version.Equals(new(m["ModuleVersion"].ToString())) ?? false))
                 )
             ).ToList().ForEach(r =>
             {
