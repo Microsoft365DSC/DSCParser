@@ -196,33 +196,24 @@ namespace DSCParser.CSharp
 
         private static string RemoveModuleVersionInfo(string content, List<string>? uniqueModules = null)
         {
-            int start = 0;
-            do
+            if (uniqueModules is null || uniqueModules.Count == 0)
             {
-                start = content.IndexOf("import-dscresource", start, StringComparison.CurrentCultureIgnoreCase);
-                if (start >= 0)
+                return content;
+            }
+
+            string pattern = @"(import-dscresource\b[^\n]*?)\s+-moduleversion\s+(?:""[^""]*""|'[^']*'|\S+)([^\n]*)";
+            return Regex.Replace(content, pattern, match =>
+            {
+                string fullLine = match.Value;
+                foreach (string module in uniqueModules)
                 {
-                    int end = content.IndexOf("\n", start);
-                    if (end > start)
+                    if (fullLine.IndexOf(module, StringComparison.CurrentCultureIgnoreCase) >= 0)
                     {
-                        foreach (string module in uniqueModules ?? [])
-                        {
-                            int moduleIndex = content.IndexOf(module, start, StringComparison.CurrentCultureIgnoreCase);
-                            if (moduleIndex >= 0 && moduleIndex < end)
-                            {
-                                start = content.IndexOf("-moduleversion", start, StringComparison.CurrentCultureIgnoreCase);
-                                if (start >= 0 && start < end)
-                                {
-                                    content = content.Remove(start, end - start);
-                                    break;
-                                }
-                            }
-                        }
-                        start += 1;
+                        return match.Groups[1].Value + match.Groups[2].Value;
                     }
                 }
-            } while (start >= 0);
-            return content;
+                return fullLine;
+            }, RegexOptions.IgnoreCase);
         }
 
         private static void InitializeCimClasses()
