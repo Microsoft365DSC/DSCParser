@@ -717,7 +717,7 @@ namespace DSCParser.CSharp
             {
                 case string strValue:
                     // If the string starts with a $ and does not contain any spaces, we treat it as a variable and do not wrap it in quotes
-                    if (strValue.StartsWith("$") && !strValue.Contains(' '))
+                    if (strValue.StartsWith("$") && !strValue.StartsWith("$($") && !strValue.Contains(' '))
                     {
                         _ = result.AppendLine($"{childSpacer}    {property}{additionalSpaces}= {strValue}");
                     }
