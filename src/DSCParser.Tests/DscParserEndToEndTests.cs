@@ -251,4 +251,111 @@ public class DscParserEndToEndTests
             DscParser.ClearCaches();
         }
     }
+
+    [Fact]
+    public void ConvertToDscObject_WithUnquotedGuidValue_ShouldQuoteItAndParse()
+    {
+        SeedResources("File");
+        try
+        {
+            const string config = """
+                Configuration TestConfig
+                {
+                    Node localhost
+                    {
+                        File Sample
+                        {
+                            DestinationPath = 'C:\x';
+                            OrganizationId  = 12345678-1234-1234-ad9c-123456789abc;
+                            Ensure          = 'Present';
+                        }
+                    }
+                }
+                """;
+
+            var warnings = new List<string>();
+            DscParser.WarningSink = warnings.Add;
+            try
+            {
+                var result = DscParser.ConvertToDscObject(content: config);
+
+                Assert.Single(result);
+                Assert.Equal("12345678-1234-1234-ad9c-123456789abc", result[0].Properties["OrganizationId"]);
+                Assert.Equal("Present", result[0].Properties["Ensure"]);
+            }
+            finally
+            {
+                DscParser.WarningSink = null;
+            }
+
+            Assert.Contains(warnings, w => w.Contains("Quoted 1 unquoted value"));
+        }
+        finally
+        {
+            DscParser.ClearCaches();
+        }
+    }
+
+    [Fact]
+    public void ConvertToDscObject_WithUnquotedGuidInsideCimInstance_ShouldQuoteIt()
+    {
+        SeedResources("File");
+        try
+        {
+            const string config = """
+                Configuration TestConfig
+                {
+                    Node localhost
+                    {
+                        File Sample
+                        {
+                            DestinationPath = 'C:\x';
+                            PsDscRunAsCredential = MSFT_Credential{
+                                UserName = 12345678-1234-1234-ad9c-123456789abc
+                                Password = 'p'
+                            };
+                        }
+                    }
+                }
+                """;
+
+            var result = DscParser.ConvertToDscObject(content: config);
+
+            Assert.Single(result);
+            var credential = (IDictionary)result[0].Properties["PsDscRunAsCredential"]!;
+            Assert.Equal("12345678-1234-1234-ad9c-123456789abc", credential["UserName"]);
+            Assert.Equal("p", credential["Password"]);
+        }
+        finally
+        {
+            DscParser.ClearCaches();
+        }
+    }
+
+    [Fact]
+    public void ConvertToDscObject_WithUnrepairableError_ShouldStillThrow()
+    {
+        SeedResources("File");
+        try
+        {
+            const string config = """
+                Configuration TestConfig
+                {
+                    Node localhost
+                    {
+                        File Sample
+                        {
+                            DestinationPath = 'C:\x'; Ensure = @{
+                        }
+                    }
+                }
+                """;
+
+            Assert.Throws<InvalidOperationException>(() => DscParser.ConvertToDscObject(content: config));
+        }
+        finally
+        {
+            DscParser.ClearCaches();
+        }
+    }
 }

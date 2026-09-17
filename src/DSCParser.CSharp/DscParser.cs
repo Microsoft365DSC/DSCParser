@@ -150,20 +150,30 @@ namespace DSCParser.CSharp
             ScriptBlockAst ast;
             Token[] tokens;
             ParseError[] parseErrors;
+            ConfigurationDefinitionAst? configAst;
             try
             {
                 RegisterKeywords(modulesToLoad, errorPrefix);
                 DscKeywordRegistry.MaterializeKeywordTable();
-                ast = Parser.ParseInput(
-                    RemoveImportDscResourceStatements(dscContent), out tokens, out parseErrors);
+                string parseContent = RemoveImportDscResourceStatements(dscContent);
+                ast = Parser.ParseInput(parseContent, out tokens, out parseErrors);
+                configAst = FindConfigurationAst(ast);
+
+                if (HasFatalParseError(parseErrors, configAst) &&
+                    TryReparseWithQuotedValues(parseContent, errorPrefix, hasFatalError: (errors, candidateAst) =>
+                        HasFatalParseError(errors, FindConfigurationAst(candidateAst)),
+                        out ScriptBlockAst repairedAst, out Token[] repairedTokens, out ParseError[] repairedErrors))
+                {
+                    ast = repairedAst;
+                    tokens = repairedTokens;
+                    parseErrors = repairedErrors;
+                    configAst = FindConfigurationAst(ast);
+                }
             }
             finally
             {
                 DscKeywordRegistry.ClearKeywordTable();
             }
-
-            // Find the Configuration definition
-            ConfigurationDefinitionAst? configAst = ast.Find(a => a is ConfigurationDefinitionAst, false) as ConfigurationDefinitionAst;
 
             ReportParseErrors(parseErrors, configAst, errorPrefix);
 
@@ -392,6 +402,31 @@ namespace DSCParser.CSharp
             }
         }
 
+        private static ConfigurationDefinitionAst? FindConfigurationAst(ScriptBlockAst ast)
+        {
+            return ast.Find(a => a is ConfigurationDefinitionAst, false) as ConfigurationDefinitionAst;
+        }
+
+        private static bool IsOutsideConfiguration(ParseError error, ConfigurationDefinitionAst? configAst)
+        {
+            return configAst is not null &&
+                   (error.Extent.StartOffset < configAst.Extent.StartOffset ||
+                    error.Extent.EndOffset > configAst.Extent.EndOffset);
+        }
+
+        private static bool HasFatalParseError(ParseError[] parseErrors, ConfigurationDefinitionAst? configAst)
+        {
+            foreach (ParseError error in parseErrors)
+            {
+                if (!IsOutsideConfiguration(error, configAst) && !IsRecoverableParseError(error))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         /// <summary>
         /// Errors outside the configuration block never affected the conversion, and registering the
         /// keywords up front makes PowerShell report some constructs that follow the block, such as the
@@ -401,9 +436,7 @@ namespace DSCParser.CSharp
         {
             foreach (ParseError error in parseErrors)
             {
-                if (configAst is not null &&
-                    (error.Extent.StartOffset < configAst.Extent.StartOffset ||
-                     error.Extent.EndOffset > configAst.Extent.EndOffset))
+                if (IsOutsideConfiguration(error, configAst))
                 {
                     continue;
                 }
@@ -417,6 +450,82 @@ namespace DSCParser.CSharp
                     throw new InvalidOperationException($"{errorPrefix}Error parsing configuration: {error.Message}");
                 }
             }
+        }
+
+        /// <summary>
+        /// Quotes the unparsable bare values in the content and reparses it, keeping the result only
+        /// when it removes every fatal error.
+        /// </summary>
+        /// <returns>True when the reparsed content replaced the original.</returns>
+        private static bool TryReparseWithQuotedValues(
+            string content,
+            string errorPrefix,
+            Func<ParseError[], ScriptBlockAst, bool> hasFatalError,
+            out ScriptBlockAst ast,
+            out Token[] tokens,
+            out ParseError[] parseErrors)
+        {
+            ast = null!;
+            tokens = [];
+            parseErrors = [];
+
+            string repaired = QuoteUnparsableBareValues(content, out int repairedCount);
+            if (repairedCount == 0)
+            {
+                return false;
+            }
+
+            ScriptBlockAst repairedAst = Parser.ParseInput(repaired, out Token[] repairedTokens, out ParseError[] repairedErrors);
+            if (hasFatalError(repairedErrors, repairedAst))
+            {
+                return false;
+            }
+
+            ast = repairedAst;
+            tokens = repairedTokens;
+            parseErrors = repairedErrors;
+
+            ReportWarning(
+                $"{errorPrefix}Quoted {repairedCount} unquoted value(s) that PowerShell cannot parse as an expression, " +
+                "such as a GUID substituted for a variable reference. They were converted as strings.");
+
+            return true;
+        }
+
+        // Matches a line holding nothing but a single bare token, either as the right-hand side of a
+        // property assignment or as a standalone array element. Requiring a single token keeps
+        // statements such as "Configuration Name" out of the repair.
+        private static readonly Regex BareValueLineRegex = new(
+            @"^(?<lead>[ \t]*(?:[A-Za-z_]\w*[ \t]*=[ \t]*)?)(?<value>[^\s""'$@(){}\[\]#`,;|]+)(?<trail>[ \t]*[;,]?[ \t]*\r?)$",
+            RegexOptions.CultureInvariant | RegexOptions.Compiled | RegexOptions.Multiline);
+
+        private const string BareValueProbePrefix = "$DscParserBareValueProbe = ";
+
+        /// <summary>
+        /// Wraps every bare value that is not a valid PowerShell expression in single quotes. Textual
+        /// variable substitution can leave a value such as "12345678-1234-1234-ad9c-123456789abc"
+        /// unquoted, which PowerShell tokenizes as arithmetic and rejects.
+        /// </summary>
+        private static string QuoteUnparsableBareValues(string content, out int repairedCount)
+        {
+            int count = 0;
+            string result = BareValueLineRegex.Replace(content, match =>
+            {
+                string value = match.Groups["value"].Value;
+
+                _ = Parser.ParseInput(BareValueProbePrefix + value, out Token[] _, out ParseError[] probeErrors);
+                if (probeErrors.Length == 0)
+                {
+                    return match.Value;
+                }
+
+                count++;
+                return $"{match.Groups["lead"].Value}'{value}'{match.Groups["trail"].Value}";
+            });
+
+            repairedCount = count;
+
+            return result;
         }
 
         private readonly struct ModuleReference(string name, Version? version)
@@ -457,6 +566,16 @@ namespace DSCParser.CSharp
             {
                 DscKeywordRegistry.MaterializeSchemaCacheKeywords();
                 nodeAst = Parser.ParseInput(nodeBody, out tokens, out parseErrors);
+
+                if (HasFatalParseError(parseErrors, configAst: null) &&
+                    TryReparseWithQuotedValues(nodeBody, errorPrefix, hasFatalError: (errors, _) =>
+                        HasFatalParseError(errors, configAst: null),
+                        out ScriptBlockAst repairedAst, out Token[] repairedTokens, out ParseError[] repairedErrors))
+                {
+                    nodeAst = repairedAst;
+                    tokens = repairedTokens;
+                    parseErrors = repairedErrors;
+                }
             }
             finally
             {

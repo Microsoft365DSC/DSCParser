@@ -12,7 +12,7 @@
     RootModule = 'DSCParser.psm1'
 
     # Version number of this module.
-    ModuleVersion = '3.1.0.4'
+    ModuleVersion = '3.1.0.5'
 
     # ID used to uniquely identify this module
     GUID = 'e168239a-233d-468d-9025-d6dfc0e4e2b6'
@@ -110,7 +110,7 @@
             IconUri = 'https://github.com/Microsoft365DSC/DSCParser/blob/master/Images/DSCParser.png?raw=true'
 
             # ReleaseNotes of this module
-            ReleaseNotes = '* Improve caching and performance during discovery and parsing of DSC resources.'
+            ReleaseNotes = '* Quote unquoted property values that PowerShell cannot parse as an expression, such as a GUID substituted for a variable reference.'
         } # End of PSData hashtable
 
     } # End of PrivateData hashtable

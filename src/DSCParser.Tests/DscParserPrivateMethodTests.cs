@@ -561,4 +561,57 @@ public class DscParserPrivateMethodTests
     }
 
     #endregion
+
+    #region QuoteUnparsableBareValues
+
+    private static readonly MethodInfo _quoteUnparsableBareValues =
+        typeof(DscParser).GetMethod("QuoteUnparsableBareValues", BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("QuoteUnparsableBareValues method not found");
+
+    private static string QuoteUnparsableBareValues(string content, out int repairedCount)
+    {
+        object?[] arguments = [content, 0];
+        string result = (string)_quoteUnparsableBareValues.Invoke(null, arguments)!;
+        repairedCount = (int)arguments[1]!;
+
+        return result;
+    }
+
+    [Fact]
+    public void QuoteUnparsableBareValues_ShouldQuoteAnAssignmentAndAnArrayElement()
+    {
+        const string content = """
+            Ids = @(
+                11111111-1234-1234-ad9c-123456789abc
+                22222222-1234-1234-ad9c-123456789abc
+            )
+            OrganizationId = 12345678-1234-1234-ad9c-123456789abc;
+            """;
+
+        string result = QuoteUnparsableBareValues(content, out int repairedCount);
+
+        Assert.Equal(3, repairedCount);
+        Assert.Contains("'11111111-1234-1234-ad9c-123456789abc'", result, StringComparison.Ordinal);
+        Assert.Contains("'22222222-1234-1234-ad9c-123456789abc'", result, StringComparison.Ordinal);
+        Assert.Contains("OrganizationId = '12345678-1234-1234-ad9c-123456789abc';", result, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("Configuration TestConfig")]
+    [InlineData("Node localhost")]
+    [InlineData("Import-DscResource -ModuleName Microsoft365DSC")]
+    [InlineData("    Ensure = 'Present'")]
+    [InlineData("    Ensure = Present")]
+    [InlineData("    TenantId = $OrganizationName")]
+    [InlineData("    Id = abcdef78-1234-1234-ad9c-123456789abc")]
+    [InlineData("    # OrganizationId = 12345678-1234-1234-ad9c-123456789abc")]
+    public void QuoteUnparsableBareValues_WithParsableContent_ShouldLeaveItUnchanged(string content)
+    {
+        string result = QuoteUnparsableBareValues(content, out int repairedCount);
+
+        Assert.Equal(0, repairedCount);
+        Assert.Equal(content, result);
+    }
+
+    #endregion
 }
