@@ -153,6 +153,193 @@ public class DscParserSchemaCacheKeywordTests : IDisposable
     }
 
     [Fact]
+    public void ConvertToDscObject_WithSettingsProperty_ShouldReadEveryResource()
+    {
+        _ = DscKeywordRegistry.RegisterFromSchemaCache(Microsoft365SchemaCacheEntries());
+
+        const string configuration = """
+            Configuration M365TenantConfig
+            {
+                param (
+                )
+
+                $OrganizationName = $ConfigurationData.NonNodeData.OrganizationName
+
+                Import-DscResource -ModuleName 'Microsoft365DSC' -ModuleVersion '1.26.1007.1'
+
+                Node localhost
+                {
+                    IntuneSettingCatalogCustomPolicyWindows10 "IntuneSettingCatalogCustomPolicyWindows10-Windows 11 Device Lockdown"
+                    {
+                        ApplicationId         = $ConfigurationData.NonNodeData.ApplicationId;
+                        Assignments           = @(
+                            MSFT_DeviceManagementConfigurationPolicyAssignments{
+                                deviceAndAppManagementAssignmentFilterType = 'none'
+                                dataType = '#microsoft.graph.allDevicesAssignmentTarget'
+                            }
+                        );
+                        CertificateThumbprint = $ConfigurationData.NonNodeData.CertificateThumbprint;
+                        Description           = "Baseline lockdown settings for shared Windows 11 devices";
+                        Ensure                = "Present";
+                        Id                    = "5f3c7a52-9d0e-4b8f-a1c6-2e7d94b3f061";
+                        Name                  = "Windows 11 Device Lockdown";
+                        Platforms             = "windows10";
+                        RoleScopeTagIds       = @("0");
+                        Settings              = @(
+                            MSFT_MicrosoftGraphdeviceManagementConfigurationSetting{
+                                SettingInstance = MSFT_MicrosoftGraphDeviceManagementConfigurationSettingInstance{
+                                    ChoiceSettingValue = MSFT_MicrosoftGraphDeviceManagementConfigurationChoiceSettingValue{
+                                        Value = 'device_vendor_msft_policy_config_abovelock_allowcortanaabovelock_1'
+                                    }
+                                    SettingDefinitionId = 'device_vendor_msft_policy_config_abovelock_allowcortanaabovelock'
+                                    odataType = '#microsoft.graph.deviceManagementConfigurationChoiceSettingInstance'
+                                }
+                            }
+                        );
+                        Technologies          = "mdm";
+                        TenantId              = $OrganizationName;
+                    }
+                    IntuneAppConfigurationDevicePolicy "IntuneAppConfigurationDevicePolicy-Outlook for iOS"
+                    {
+                        ApplicationId         = $ConfigurationData.NonNodeData.ApplicationId;
+                        Assignments           = @();
+                        CertificateThumbprint = $ConfigurationData.NonNodeData.CertificateThumbprint;
+                        ConnectedAppsEnabled  = $False;
+                        Description           = "";
+                        DisplayName           = "Outlook for iOS";
+                        Ensure                = "Present";
+                        Id                    = "9b1d4e27-6c3a-4f80-b5e2-71a0c8d3e94f";
+                        RoleScopeTagIds       = @("0");
+                        Settings              = @(
+                            MSFT_MicrosoftGraphappConfigurationSettingItem{
+                                AppConfigKey = 'com.microsoft.outlook.Mail.FocusedInbox'
+                                AppConfigKeyType = 'booleanType'
+                                AppConfigKeyValue = 'true'
+                            }
+                        );
+                        TargetedMobileApps    = @("3f2a9c1e-8b47-4d65-a0e3-c5b9174d2f80");
+                        TenantId              = $OrganizationName;
+                    }
+                }
+            }
+            """;
+
+        List<DscResourceInstance> result = DscParser.ConvertToDscObject(
+            content: configuration,
+            options: new DscParseOptions { UseRegisteredKeywords = true },
+            dscResources: Microsoft365ResourceDefinitions());
+
+        Assert.Equal(
+            ["IntuneSettingCatalogCustomPolicyWindows10", "IntuneAppConfigurationDevicePolicy"],
+            result.Select(resource => resource.ResourceName));
+
+        object[] catalogSettings = Assert.IsType<object[]>(result[0].ToHashtable()["Settings"]);
+        Hashtable setting = Assert.IsType<Hashtable>(Assert.Single(catalogSettings));
+        Hashtable settingInstance = Assert.IsType<Hashtable>(setting["SettingInstance"]);
+        Hashtable choice = Assert.IsType<Hashtable>(settingInstance["ChoiceSettingValue"]);
+        Assert.Equal("device_vendor_msft_policy_config_abovelock_allowcortanaabovelock_1", choice["Value"]);
+        Assert.Equal("mdm", result[0].Properties["Technologies"]);
+
+        object[] appSettings = Assert.IsType<object[]>(result[1].ToHashtable()["Settings"]);
+        Hashtable appSetting = Assert.IsType<Hashtable>(Assert.Single(appSettings));
+        Assert.Equal("com.microsoft.outlook.Mail.FocusedInbox", appSetting["AppConfigKey"]);
+        Assert.Equal("Outlook for iOS", result[1].Properties["DisplayName"]);
+    }
+
+    [Theory]
+    [InlineData("Settings")]
+    [InlineData("LocalConfigurationManager")]
+    [InlineData("ConfigurationRepositoryWeb")]
+    [InlineData("ResourceRepositoryWeb")]
+    [InlineData("ReportServerWeb")]
+    [InlineData("PartialConfiguration")]
+    [InlineData("User")]
+    [InlineData("Configuration")]
+    [InlineData("End")]
+    public void ConvertToDscObject_WithPropertyNamedLikeAKeyword_ShouldReadEveryResource(string property)
+    {
+        _ = DscKeywordRegistry.RegisterFromSchemaCache(
+        [
+            Entry(ResourceKeyword, "NameRequired", new Dictionary<string, string[]>
+            {
+                ["DisplayName"] = ["String"],
+                [property] = ["StringArray"],
+            }),
+        ]);
+
+        List<DscResourceInstance> result = Parse($$"""
+            Configuration TenantConfig
+            {
+                Node localhost
+                {
+                    ContosoPolicy "First"
+                    {
+                        {{property}} = @(
+                            'alpha'
+                            'beta'
+                        )
+                        DisplayName = "First policy"
+                    }
+                    ContosoPolicy "Second"
+                    {
+                        DisplayName = "Second policy"
+                    }
+                }
+            }
+            """);
+
+        Assert.Equal(["First", "Second"], result.Select(resource => resource.ResourceInstanceName));
+        Assert.Equal(new object[] { "alpha", "beta" }, result[0].Properties[property]);
+    }
+
+    [Fact]
+    public void ConvertToDscObject_WithNodeOutsideConfigurationAndKeywordProperty_ShouldReadEveryResource()
+    {
+        _ = DscKeywordRegistry.RegisterFromSchemaCache(
+        [
+            Entry(ResourceKeyword, "NameRequired", new Dictionary<string, string[]>
+            {
+                ["DisplayName"] = ["String"],
+                ["End"] = ["String"],
+            }),
+        ]);
+
+        List<DscResourceInstance> result = Parse("""
+            Node localhost
+            {
+                ContosoPolicy "First"
+                {
+                    End = '17:00'
+                    DisplayName = "First policy"
+                }
+                ContosoPolicy "Second"
+                {
+                    DisplayName = "Second policy"
+                }
+            }
+            """);
+
+        Assert.Equal(["First", "Second"], result.Select(resource => resource.ResourceInstanceName));
+    }
+
+    [Fact]
+    public void ConvertToDscObject_WithUnclosedNodeBlock_ShouldThrow()
+    {
+        Register();
+
+        _ = Assert.Throws<InvalidOperationException>(() => Parse("""
+            Configuration TenantConfig
+            {
+                Node localhost
+                {
+                    ContosoPolicy "Corp"
+                    {
+                        DisplayName = "Corp policy"
+                    }
+            """));
+    }
+
+    [Fact]
     public void RegisterFromSchemaCache_WithSameKeywordTwice_ShouldNotDuplicate()
     {
         Assert.Equal(2, DscKeywordRegistry.RegisterFromSchemaCache(SchemaCacheEntries()));
@@ -207,6 +394,71 @@ public class DscParserSchemaCacheKeywordTests : IDisposable
         Entry(CimKeyword, "NoName", new Dictionary<string, string[]>
         {
             ["Target"] = ["String"],
+        }),
+    ];
+
+    private static List<object> Microsoft365ResourceDefinitions() =>
+    [
+        new DscResourceInfo { Name = "IntuneSettingCatalogCustomPolicyWindows10", ResourceType = "IntuneSettingCatalogCustomPolicyWindows10" },
+        new DscResourceInfo { Name = "IntuneAppConfigurationDevicePolicy", ResourceType = "IntuneAppConfigurationDevicePolicy" },
+    ];
+
+    private static List<object> Microsoft365SchemaCacheEntries() =>
+    [
+        Entry("IntuneSettingCatalogCustomPolicyWindows10", "NameRequired", new Dictionary<string, string[]>
+        {
+            ["ApplicationId"] = ["String"],
+            ["Assignments"] = ["MSFT_DeviceManagementConfigurationPolicyAssignments[]"],
+            ["CertificateThumbprint"] = ["String"],
+            ["Description"] = ["String"],
+            ["Ensure"] = ["String", "Present", "Absent"],
+            ["Id"] = ["String"],
+            ["Name"] = ["String"],
+            ["Platforms"] = ["String"],
+            ["RoleScopeTagIds"] = ["StringArray"],
+            ["Settings"] = ["MSFT_MicrosoftGraphdeviceManagementConfigurationSetting[]"],
+            ["Technologies"] = ["String"],
+            ["TenantId"] = ["String"],
+        }),
+        Entry("IntuneAppConfigurationDevicePolicy", "NameRequired", new Dictionary<string, string[]>
+        {
+            ["ApplicationId"] = ["String"],
+            ["Assignments"] = ["MSFT_DeviceManagementConfigurationPolicyAssignments[]"],
+            ["CertificateThumbprint"] = ["String"],
+            ["ConnectedAppsEnabled"] = ["Boolean"],
+            ["Description"] = ["String"],
+            ["DisplayName"] = ["String"],
+            ["Ensure"] = ["String", "Present", "Absent"],
+            ["Id"] = ["String"],
+            ["RoleScopeTagIds"] = ["StringArray"],
+            ["Settings"] = ["MSFT_MicrosoftGraphappConfigurationSettingItem[]"],
+            ["TargetedMobileApps"] = ["StringArray"],
+            ["TenantId"] = ["String"],
+        }),
+        Entry("MSFT_DeviceManagementConfigurationPolicyAssignments", "NoName", new Dictionary<string, string[]>
+        {
+            ["dataType"] = ["String"],
+            ["deviceAndAppManagementAssignmentFilterType"] = ["String"],
+        }),
+        Entry("MSFT_MicrosoftGraphdeviceManagementConfigurationSetting", "NoName", new Dictionary<string, string[]>
+        {
+            ["SettingInstance"] = ["MSFT_MicrosoftGraphDeviceManagementConfigurationSettingInstance"],
+        }),
+        Entry("MSFT_MicrosoftGraphDeviceManagementConfigurationSettingInstance", "NoName", new Dictionary<string, string[]>
+        {
+            ["ChoiceSettingValue"] = ["MSFT_MicrosoftGraphDeviceManagementConfigurationChoiceSettingValue"],
+            ["odataType"] = ["String"],
+            ["SettingDefinitionId"] = ["String"],
+        }),
+        Entry("MSFT_MicrosoftGraphDeviceManagementConfigurationChoiceSettingValue", "NoName", new Dictionary<string, string[]>
+        {
+            ["Value"] = ["String"],
+        }),
+        Entry("MSFT_MicrosoftGraphappConfigurationSettingItem", "NoName", new Dictionary<string, string[]>
+        {
+            ["AppConfigKey"] = ["String"],
+            ["AppConfigKeyType"] = ["String"],
+            ["AppConfigKeyValue"] = ["String"],
         }),
     ];
 

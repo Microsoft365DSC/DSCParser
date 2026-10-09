@@ -552,12 +552,11 @@ namespace DSCParser.CSharp
                     "No keywords are registered. Call DscKeywordRegistry.RegisterFromSchemaCache before parsing with UseRegisteredKeywords.");
             }
 
-            ScriptBlockAst outerAst = Parser.ParseInput(
-                RemoveImportDscResourceStatements(dscContent), out Token[] _, out ParseError[] _);
+            string content = RemoveImportDscResourceStatements(dscContent);
 
             // Without a Node statement the whole content is the fragment, so a configuration
             // fragment holding nothing but resource blocks still converts.
-            string nodeBody = FindNodeBody(outerAst) ?? RemoveImportDscResourceStatements(dscContent);
+            string nodeBody = FindNodeBody(content) ?? content;
 
             ScriptBlockAst nodeAst;
             Token[] tokens;
@@ -604,7 +603,16 @@ namespace DSCParser.CSharp
         /// Returns the statements of the configuration's Node block as parsable text, or null when
         /// there is no Node statement.
         /// </summary>
-        private static string? FindNodeBody(Ast ast)
+        private static string? FindNodeBody(string content)
+        {
+            ScriptBlockAst ast = Parser.ParseInput(content, out Token[] tokens, out ParseError[] _);
+
+            return FindNodeScriptBlock(ast) is { } body
+                ? ReadBlockContents(content, tokens, body.Extent.StartOffset)
+                : null;
+        }
+
+        private static ScriptBlockExpressionAst? FindNodeScriptBlock(Ast ast)
         {
             if (ast.Find(
                     node => node is DynamicKeywordStatementAst { CommandElements.Count: 3 } keyword
@@ -612,7 +620,7 @@ namespace DSCParser.CSharp
                             && keyword.CommandElements[2] is ScriptBlockExpressionAst,
                     searchNestedScriptBlocks: true) is DynamicKeywordStatementAst dynamicNode)
             {
-                return Unbrace((ScriptBlockExpressionAst)dynamicNode.CommandElements[2]);
+                return (ScriptBlockExpressionAst)dynamicNode.CommandElements[2];
             }
 
             // Outside a Configuration block, Node is not a keyword and its body may be a statement of
@@ -637,7 +645,7 @@ namespace DSCParser.CSharp
                     if (command.CommandElements.Count == 3 &&
                         command.CommandElements[2] is ScriptBlockExpressionAst inline)
                     {
-                        return Unbrace(inline);
+                        return inline;
                     }
 
                     if (index + 1 < statements.Count &&
@@ -645,7 +653,7 @@ namespace DSCParser.CSharp
                         next.PipelineElements.Count == 1 &&
                         next.PipelineElements[0] is CommandExpressionAst { Expression: ScriptBlockExpressionAst detached })
                     {
-                        return Unbrace(detached);
+                        return detached;
                     }
                 }
             }
@@ -653,17 +661,29 @@ namespace DSCParser.CSharp
             return null;
         }
 
-        /// <summary>
-        /// The contents of a scriptblock, which parse as a script where the braced form would parse
-        /// as one expression.
-        /// </summary>
-        private static string Unbrace(ScriptBlockExpressionAst body)
+        // Tokens keep every brace where the AST closes a block early at a property named like a
+        // keyword, such as Settings inside a Configuration block or End anywhere.
+        private static string ReadBlockContents(string content, Token[] tokens, int openOffset)
         {
-            string text = body.Extent.Text.Trim();
+            int depth = 0;
+            foreach (Token token in tokens)
+            {
+                if (token.Extent.StartOffset < openOffset)
+                {
+                    continue;
+                }
 
-            return text.Length >= 2 && text[0] == '{' && text[text.Length - 1] == '}'
-                ? text.Substring(1, text.Length - 2)
-                : text;
+                if (token.Kind is TokenKind.LCurly or TokenKind.AtCurly)
+                {
+                    depth++;
+                }
+                else if (token.Kind is TokenKind.RCurly && --depth == 0)
+                {
+                    return content.Substring(openOffset + 1, token.Extent.StartOffset - openOffset - 1);
+                }
+            }
+
+            return content.Substring(openOffset);
         }
 
         private static bool IsBareWord(CommandElementAst element, string value)
