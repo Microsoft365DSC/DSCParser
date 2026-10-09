@@ -246,6 +246,119 @@ public class DscParserSchemaCacheKeywordTests : IDisposable
         Assert.Equal("Outlook for iOS", result[1].Properties["DisplayName"]);
     }
 
+    [Fact]
+    public void ConvertToDscObject_WithUnknownPropertyInExport_ShouldReportTheFileLine()
+    {
+        List<string> warnings = ParseMicrosoft365Warnings("""
+            # Generated with Microsoft365DSC version 1.26.1007.1
+            # For additional information on the Dependencies of the Microsoft365DSC module, please visit
+            # https://microsoft365dsc.com/user-guide/get-started/powershell7-support/
+            param (
+            )
+
+            Configuration M365TenantConfig
+            {
+                param (
+                )
+
+                $OrganizationName = $ConfigurationData.NonNodeData.OrganizationName
+
+                Import-DscResource -ModuleName 'Microsoft365DSC' -ModuleVersion '1.26.1007.1'
+
+                Node localhost
+                {
+                    IntuneAppConfigurationDevicePolicy "IntuneAppConfigurationDevicePolicy-Outlook for iOS"
+                    {
+                        ApplicationId         = $ConfigurationData.NonNodeData.ApplicationId;
+                        CertificateThumbprint = $ConfigurationData.NonNodeData.CertificateThumbprint;
+                        DisplayName           = "Outlook for iOS";
+                        NoSuchSetting         = "Unknown";
+                        Ensure                = "Present";
+                        TenantId              = $OrganizationName;
+                    }
+                }
+            }
+
+            M365TenantConfig -ConfigurationData .\ConfigurationData.psd1
+            """);
+
+        Assert.Contains(warnings, warning => warning.Contains("Property 'NoSuchSetting' (line 23)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ConvertToDscObject_WithNodeAfterMultiLineParamBlock_ShouldReportTheFileLine()
+    {
+        List<string> warnings = ParseMicrosoft365Warnings("""
+            Configuration M365TenantConfig
+            {
+                param (
+                    [parameter()]
+                    [System.Management.Automation.PSCredential]
+                    $Credential
+                )
+
+                if ($null -eq $Credential)
+                {
+                    $CredsCredential = Get-Credential -Message "Credentials"
+                }
+                else
+                {
+                    $CredsCredential = $Credential
+                }
+
+                $OrganizationName = $CredsCredential.UserName.Split('@')[1]
+                Import-DscResource -ModuleName 'Microsoft365DSC' -ModuleVersion '1.26.1007.1'
+
+                Node localhost
+                {
+                    IntuneAppConfigurationDevicePolicy "IntuneAppConfigurationDevicePolicy-Outlook for iOS"
+                    {
+                        DisplayName           = "Outlook for iOS";
+                        Ensure                = "Present";
+                        Settings              = @(
+                            MSFT_MicrosoftGraphappConfigurationSettingItem{
+                                AppConfigKey = 'com.microsoft.outlook.Mail.FocusedInbox'
+                                AppConfigKeyValue = 'true'
+                            }
+                        );
+                        NoSuchSetting         = "Unknown";
+                        TenantId              = $OrganizationName;
+                    }
+                }
+            }
+            """);
+
+        Assert.Contains(warnings, warning => warning.Contains("Property 'NoSuchSetting' (line 33)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ConvertToDscObject_WithUnknownPropertyAfterQuotedValueRepair_ShouldReportTheFileLine()
+    {
+        List<string> warnings = ParseMicrosoft365Warnings("""
+            Configuration M365TenantConfig
+            {
+                param (
+                )
+
+                Import-DscResource -ModuleName 'Microsoft365DSC' -ModuleVersion '1.26.1007.1'
+
+                Node localhost
+                {
+                    IntuneAppConfigurationDevicePolicy "IntuneAppConfigurationDevicePolicy-Outlook for iOS"
+                    {
+                        DisplayName           = "Outlook for iOS";
+                        Id                    = 12345678-1234-1234-ad9c-123456789abc;
+                        NoSuchSetting         = "Unknown";
+                        Ensure                = "Present";
+                    }
+                }
+            }
+            """);
+
+        Assert.Contains(warnings, warning => warning.StartsWith("Quoted 1 unquoted value(s)", StringComparison.Ordinal));
+        Assert.Contains(warnings, warning => warning.Contains("Property 'NoSuchSetting' (line 14)", StringComparison.Ordinal));
+    }
+
     [Theory]
     [InlineData("Settings")]
     [InlineData("LocalConfigurationManager")]
@@ -340,6 +453,380 @@ public class DscParserSchemaCacheKeywordTests : IDisposable
     }
 
     [Fact]
+    public void ConvertToDscObject_WithStringBeforeCimInstanceInArray_ShouldReadBoth()
+    {
+        Register();
+
+        List<DscResourceInstance> result = Parse("""
+            Configuration TenantConfig
+            {
+                Node localhost
+                {
+                    ContosoPolicy "Corp"
+                    {
+                        DisplayName = "Corp policy"
+                        Assignments = @(
+                            'plain'
+                            MSFT_ContosoAssignment {
+                                Target = 'AllUsers'
+                            }
+                        )
+                    }
+                }
+            }
+            """);
+
+        List<object> assignments = Assert.IsType<List<object>>(Assert.Single(result).Properties["Assignments"]);
+        Assert.Equal("plain", assignments[0]);
+        Assert.Equal("AllUsers", Assert.IsType<Dictionary<string, object?>>(assignments[1])["Target"]);
+    }
+
+    [Fact]
+    public void ConvertToDscObject_WithConfigurationWithoutNode_ShouldReadItsResources()
+    {
+        Register();
+        List<string> warnings = [];
+        DscParser.WarningSink = warnings.Add;
+
+        List<DscResourceInstance> result = Parse("""
+            Configuration TenantConfig
+            {
+                param ()
+
+                $OrganizationName = 'contoso.onmicrosoft.com'
+
+                ContosoPolicy "Corp"
+                {
+                    DisplayName = "Corp policy"
+                }
+                ContosoPolicy "Branch"
+                {
+                    DisplayName = "Branch policy"
+                }
+            }
+
+            TenantConfig
+            """);
+
+        Assert.Equal(["Corp", "Branch"], result.Select(resource => resource.ResourceInstanceName));
+        Assert.Empty(warnings);
+    }
+
+    [Fact]
+    public void ConvertToDscObject_WithMissingMandatoryProperties_ShouldWarnPerResourceAndKeepTheResource()
+    {
+        _ = DscKeywordRegistry.RegisterFromSchemaCache(
+        [
+            Entry(ResourceKeyword, "NameRequired", new Dictionary<string, string[]>
+            {
+                ["DisplayName"] = ["String"],
+                ["Enabled"] = ["Boolean"],
+                ["Assignments"] = ["ContosoAssignment[]"],
+            }, "DisplayName"),
+            Entry(CimKeyword, "NoName", new Dictionary<string, string[]>
+            {
+                ["Target"] = ["String"],
+                ["Scope"] = ["String"],
+            }, "Target"),
+        ]);
+        List<string> warnings = [];
+        DscParser.WarningSink = warnings.Add;
+
+        List<DscResourceInstance> result = Parse("""
+            Configuration TenantConfig
+            {
+                Node localhost
+                {
+                    ContosoPolicy "Corp"
+                    {
+                        Enabled     = $true
+                        Assignments = @(
+                            MSFT_ContosoAssignment {
+                                Scope = 'Tenant'
+                            }
+                        )
+                    }
+                }
+            }
+            """);
+
+        DscResourceInstance policy = Assert.Single(result);
+        Assert.Equal(true, policy.Properties["Enabled"]);
+        Assert.Equal(2, warnings.Count);
+        Assert.Contains("Resource 'ContosoPolicy' (instance 'Corp', line 5) is missing the mandatory property 'DisplayName'.", warnings);
+        Assert.Contains("'MSFT_ContosoAssignment' (line 9) in resource 'ContosoPolicy' (instance 'Corp') is missing the mandatory property 'Target'.", warnings);
+    }
+
+    [Fact]
+    public void ConvertToDscObject_WithTwoNodeBlocks_ShouldReadBothAndWarnAboutTheDifferentNames()
+    {
+        Register();
+        List<string> warnings = [];
+        DscParser.WarningSink = warnings.Add;
+
+        List<DscResourceInstance> result = Parse("""
+            Configuration TenantConfig
+            {
+                Node localhost
+                {
+                    ContosoPolicy "First"
+                    {
+                        DisplayName = "First policy"
+                    }
+                }
+                Node other
+                {
+                    ContosoPolicy "Second"
+                    {
+                        DisplayName = "Second policy"
+                    }
+                }
+            }
+            """);
+
+        Assert.Equal(["First", "Second"], result.Select(resource => resource.ResourceInstanceName));
+        Assert.Equal(
+            ["Read the resources of the Node blocks 'localhost', 'other' into one configuration."],
+            warnings);
+    }
+
+    [Fact]
+    public void ConvertToDscObject_WithResourceBesideNode_ShouldReadItInDocumentOrder()
+    {
+        Register();
+
+        List<DscResourceInstance> result = Parse("""
+            Configuration TenantConfig
+            {
+                ContosoPolicy "Before"
+                {
+                    DisplayName = "Before policy"
+                }
+                Node localhost
+                {
+                    ContosoPolicy "Inside"
+                    {
+                        DisplayName = "Inside policy"
+                    }
+                }
+            }
+            """);
+
+        Assert.Equal(["Before", "Inside"], result.Select(resource => resource.ResourceInstanceName));
+    }
+
+    [Fact]
+    public void ConvertToDscObject_WithConcatenatedValues_ShouldFoldConstantsAndWarnAboutTheRest()
+    {
+        Register();
+        List<string> warnings = [];
+        DscParser.WarningSink = warnings.Add;
+
+        List<DscResourceInstance> result = Parse("""
+            Configuration TenantConfig
+            {
+                Node localhost
+                {
+                    ContosoPolicy "Corp"
+                    {
+                        DisplayName = "Corp" + " " + "policy"
+                        Threshold   = 1 + 2
+                        Ensure      = $prefix + "Present"
+                        Assignments = @(
+                            MSFT_ContosoAssignment {
+                                Target = 'Kiosk' + ' Devices'
+                            }
+                        )
+                    }
+                }
+            }
+            """);
+
+        DscResourceInstance policy = Assert.Single(result);
+        Assert.Equal("Corp policy", policy.Properties["DisplayName"]);
+        Assert.Equal(3, policy.Properties["Threshold"]);
+        Assert.Equal("$prefix + \"Present\"", policy.Properties["Ensure"]);
+        List<object> assignments = Assert.IsType<List<object>>(policy.Properties["Assignments"]);
+        Assert.Equal("Kiosk Devices", Assert.IsType<Dictionary<string, object?>>(Assert.Single(assignments))["Target"]);
+        Assert.Equal(
+            ["The value '$prefix + \"Present\"' (line 9) is not a constant expression and was kept as text."],
+            warnings);
+    }
+
+    [Fact]
+    public void ConvertToDscObject_WithConcatenationInSingleCimInstance_ShouldFoldTheWholeValue()
+    {
+        Register();
+        List<string> warnings = [];
+        DscParser.WarningSink = warnings.Add;
+
+        List<DscResourceInstance> result = Parse("""
+            Configuration TenantConfig
+            {
+                Node localhost
+                {
+                    ContosoPolicy "Corp"
+                    {
+                        DisplayName = "Corp policy"
+                        Assignments = MSFT_ContosoAssignment {
+                            Target = 'Kiosk' + ' Devices'
+                            Scope  = $tenant + '.onmicrosoft.com'
+                        }
+                    }
+                }
+            }
+            """);
+
+        Dictionary<string, object?> assignment = Assert.IsType<Dictionary<string, object?>>(Assert.Single(result).Properties["Assignments"]);
+        Assert.Equal("Kiosk Devices", assignment["Target"]);
+        Assert.Equal("$tenant + '.onmicrosoft.com'", assignment["Scope"]);
+        Assert.Equal(
+            ["The value '$tenant + '.onmicrosoft.com'' (line 10) is not a constant expression and was kept as text."],
+            warnings);
+    }
+
+    [Fact]
+    public void ConvertToDscObject_WithCommaListWithoutArrayOperator_ShouldReturnAList()
+    {
+        Register();
+
+        List<DscResourceInstance> result = Parse("""
+            Configuration TenantConfig
+            {
+                Node localhost
+                {
+                    ContosoPolicy "Corp"
+                    {
+                        DisplayName = "Corp policy"
+                        Tags        = 'alpha', 'beta'
+                        Assignments = MSFT_ContosoAssignment {
+                            Target = 'a', 'b'
+                        }
+                    }
+                }
+            }
+            """);
+
+        DscResourceInstance policy = Assert.Single(result);
+        Assert.Equal(new object[] { "alpha", "beta" }, Assert.IsType<List<object>>(policy.Properties["Tags"]));
+        Dictionary<string, object?> assignment = Assert.IsType<Dictionary<string, object?>>(policy.Properties["Assignments"]);
+        Assert.Equal(new object[] { "a", "b" }, Assert.IsType<List<object>>(assignment["Target"]));
+    }
+
+    [Fact]
+    public void ConvertToDscObject_WithCommandFormValueOnTheNextLine_ShouldReadIt()
+    {
+        Register();
+
+        List<DscResourceInstance> result = Parse("""
+            Configuration TenantConfig
+            {
+                Node localhost
+                {
+                    ContosoPolicy "Corp"
+                    {
+                        DisplayName = "Corp policy"
+                        Assignments = MSFT_Credential {
+                            UserName =
+                                'admin'
+                            Password = 'secret'
+                        }
+                    }
+                }
+            }
+            """);
+
+        Dictionary<string, object?> credential = Assert.IsType<Dictionary<string, object?>>(Assert.Single(result).Properties["Assignments"]);
+        Assert.Equal("admin", credential["UserName"]);
+        Assert.Equal("secret", credential["Password"]);
+    }
+
+    [Fact]
+    public void ConvertToDscObject_WithCommandInArray_ShouldKeepItsTextAndWarn()
+    {
+        Register();
+        List<string> warnings = [];
+        DscParser.WarningSink = warnings.Add;
+
+        List<DscResourceInstance> result = Parse("""
+            Configuration TenantConfig
+            {
+                Node localhost
+                {
+                    ContosoPolicy "Corp"
+                    {
+                        DisplayName = "Corp policy"
+                        Tags        = @(
+                            'alpha'
+                            Get-Item $path
+                        )
+                    }
+                }
+            }
+            """);
+
+        Assert.Equal(new object[] { "alpha", "Get-Item $path" }, Assert.IsType<List<object>>(Assert.Single(result).Properties["Tags"]));
+        Assert.Equal(["The value 'Get-Item $path' (line 10) is not a constant expression and was kept as text."], warnings);
+    }
+
+    [Fact]
+    public void ConvertToDscObject_WithNodeBlocksInsideStatementBlocks_ShouldReadThem()
+    {
+        Register();
+
+        List<DscResourceInstance> result = Parse("""
+            Configuration TenantConfig
+            {
+                ContosoPolicy "Beside"
+                {
+                    DisplayName = "Beside policy"
+                }
+                if ($ConfigurationData)
+                {
+                    Node localhost
+                    {
+                        ContosoPolicy "InIf"
+                        {
+                            DisplayName = "If policy"
+                        }
+                    }
+                }
+                foreach ($nodeName in @('localhost'))
+                {
+                    Node $nodeName {
+                        ContosoPolicy "InLoop"
+                        {
+                            DisplayName = "Loop policy"
+                        }
+                    }
+                }
+            }
+            """);
+
+        Assert.Equal(["Beside", "InIf", "InLoop"], result.Select(resource => resource.ResourceInstanceName));
+    }
+
+    [Fact]
+    public void RegisterFromSchemaCache_WithEmptyValueMapKey_ShouldKeepIt()
+    {
+        Hashtable entry = Entry(ResourceKeyword, "NameRequired", new Dictionary<string, string[]>
+        {
+            ["Mode"] = ["String", "", "Strict"],
+        });
+        _ = DscKeywordRegistry.RegisterFromSchemaCache([entry]);
+
+        DscKeywordRegistry.MaterializeSchemaCacheKeywords();
+        try
+        {
+            Assert.Equal(["", "Strict"], DynamicKeyword.GetKeyword(ResourceKeyword).Properties["Mode"].ValueMap.Keys.Order());
+        }
+        finally
+        {
+            DscKeywordRegistry.ClearKeywordTable();
+        }
+    }
+
+    [Fact]
     public void RegisterFromSchemaCache_WithSameKeywordTwice_ShouldNotDuplicate()
     {
         Assert.Equal(2, DscKeywordRegistry.RegisterFromSchemaCache(SchemaCacheEntries()));
@@ -362,6 +849,21 @@ public class DscParserSchemaCacheKeywordTests : IDisposable
             content: configuration,
             options: new DscParseOptions { UseRegisteredKeywords = true },
             dscResources: ResourceDefinitions());
+    }
+
+    private static List<string> ParseMicrosoft365Warnings(string configuration)
+    {
+        _ = DscKeywordRegistry.RegisterFromSchemaCache(Microsoft365SchemaCacheEntries());
+
+        List<string> warnings = [];
+        DscParser.WarningSink = warnings.Add;
+
+        _ = DscParser.ConvertToDscObject(
+            content: configuration,
+            options: new DscParseOptions { UseRegisteredKeywords = true },
+            dscResources: Microsoft365ResourceDefinitions());
+
+        return warnings;
     }
 
     private static void Register()
@@ -394,6 +896,7 @@ public class DscParserSchemaCacheKeywordTests : IDisposable
         Entry(CimKeyword, "NoName", new Dictionary<string, string[]>
         {
             ["Target"] = ["String"],
+            ["Scope"] = ["String"],
         }),
     ];
 
@@ -462,7 +965,8 @@ public class DscParserSchemaCacheKeywordTests : IDisposable
         }),
     ];
 
-    private static Hashtable Entry(string keyword, string nameMode, Dictionary<string, string[]> properties)
+    private static Hashtable Entry(
+        string keyword, string nameMode, Dictionary<string, string[]> properties, params string[] mandatory)
     {
         Hashtable propertyMap = new(StringComparer.OrdinalIgnoreCase);
 
@@ -472,7 +976,7 @@ public class DscParserSchemaCacheKeywordTests : IDisposable
             {
                 ["name"] = name,
                 ["typeConstraint"] = typeAndValues[0],
-                ["mandatory"] = false,
+                ["mandatory"] = mandatory.Contains(name, StringComparer.OrdinalIgnoreCase),
                 ["isKey"] = false,
                 ["attributes"] = Array.Empty<object>(),
                 ["values"] = typeAndValues.Skip(1).Cast<object>().ToArray(),

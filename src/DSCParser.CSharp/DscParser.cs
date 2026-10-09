@@ -2,10 +2,12 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Management.Automation;
 using System.Management.Automation.Language;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using DSCParser.PSDSC;
@@ -63,8 +65,12 @@ namespace DSCParser.CSharp
         private static readonly HashSet<string> RecoverableParseErrorIds = new(StringComparer.Ordinal)
         {
             "ResourceNotDefined",
-            "InvalidInstanceProperty"
+            "InvalidInstanceProperty",
+            DscSchemaCacheKeywords.MissingMandatoryPropertyErrorId
         };
+
+        private static readonly PropertyInfo? StatementKeywordProperty =
+            typeof(DynamicKeywordStatementAst).GetProperty("Keyword", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
 
         private static bool IsRecoverableParseError(ParseError error)
         {
@@ -76,9 +82,131 @@ namespace DSCParser.CSharp
         private static string DescribeParseError(ParseError error)
         {
             // The raw message lists every valid member, which is too noisy to surface.
-            return error.ErrorId.Equals("InvalidInstanceProperty", StringComparison.Ordinal)
-                ? $"Property '{error.Extent.Text}' (line {error.Extent.StartLineNumber}) does not exist on its resource in the installed module version."
-                : error.Message;
+            return error.ErrorId switch
+            {
+                "InvalidInstanceProperty" =>
+                    $"Property '{error.Extent.Text}' (line {error.Extent.StartLineNumber}) does not exist on its resource in the installed module version.",
+                DscSchemaCacheKeywords.MissingMandatoryPropertyErrorId =>
+                    $"{error.Message} (line {error.Extent.StartLineNumber})",
+                _ => error.Message
+            };
+        }
+
+        /// <summary>
+        /// The errors a statement reports for each missing mandatory property become one warning.
+        /// </summary>
+        private static void ReportParseError(
+            ParseError error, Ast? root, string errorPrefix, Dictionary<int, string?> describedStatements)
+        {
+            if (!IsRecoverableParseError(error))
+            {
+                throw new InvalidOperationException($"{errorPrefix}Error parsing configuration: {error.Message}");
+            }
+
+            if (error.ErrorId.Equals(DscSchemaCacheKeywords.MissingMandatoryPropertyErrorId, StringComparison.Ordinal) &&
+                root?.Find(ast => IsKeywordStatementAt(ast, error.Extent), searchNestedScriptBlocks: true) is DynamicKeywordStatementAst statement)
+            {
+                if (!describedStatements.TryGetValue(statement.Extent.StartOffset, out string? description))
+                {
+                    description = DescribeMissingMandatoryProperties(statement);
+                    describedStatements[statement.Extent.StartOffset] = description;
+
+                    if (description is not null)
+                    {
+                        ReportWarning(errorPrefix + description);
+                    }
+                }
+
+                if (description is not null)
+                {
+                    return;
+                }
+            }
+
+            ReportWarning($"{errorPrefix}{DescribeParseError(error)}");
+        }
+
+        private static bool IsKeywordStatementAt(Ast ast, IScriptExtent extent)
+        {
+            return ast is DynamicKeywordStatementAst { CommandElements.Count: > 0 } statement &&
+                   statement.CommandElements[0].Extent.StartOffset == extent.StartOffset &&
+                   statement.CommandElements[0].Extent.EndOffset == extent.EndOffset;
+        }
+
+        private static string? DescribeMissingMandatoryProperties(DynamicKeywordStatementAst statement)
+        {
+            if (StatementKeywordProperty?.GetValue(statement) is not DynamicKeyword keyword)
+            {
+                return null;
+            }
+
+            HashSet<string> present = new(
+                statement.CommandElements.OfType<HashtableAst>()
+                    .SelectMany(body => body.KeyValuePairs)
+                    .Select(pair => pair.Item1)
+                    .OfType<StringConstantExpressionAst>()
+                    .Select(key => key.Value),
+                StringComparer.OrdinalIgnoreCase);
+
+            List<string> missing = keyword.Properties
+                .Where(property => property.Value.Mandatory && !present.Contains(property.Key))
+                .Select(property => property.Key)
+                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .Select(name => $"'{name}'")
+                .ToList();
+
+            if (missing.Count == 0)
+            {
+                return null;
+            }
+
+            string properties = missing.Count == 1
+                ? $"property {missing[0]}"
+                : $"properties {string.Join(", ", missing)}";
+            string keywordName = statement.CommandElements[0].Extent.Text;
+            int line = statement.Extent.StartLineNumber;
+
+            DynamicKeywordStatementAst? resource = FindEnclosingKeywordStatement(statement);
+            if (resource is null)
+            {
+                return ReadInstanceName(statement) is { } instance
+                    ? $"Resource '{keywordName}' (instance '{instance}', line {line}) is missing the mandatory {properties}."
+                    : $"Resource '{keywordName}' (line {line}) is missing the mandatory {properties}.";
+            }
+
+            return $"'{keywordName}' (line {line}) in resource '{resource.CommandElements[0].Extent.Text}' " +
+                   $"(instance '{ReadInstanceName(resource) ?? string.Empty}') is missing the mandatory {properties}.";
+        }
+
+        private static DynamicKeywordStatementAst? FindEnclosingKeywordStatement(Ast ast)
+        {
+            DynamicKeywordStatementAst? outermost = null;
+            for (Ast? parent = ast.Parent; parent is not null; parent = parent.Parent)
+            {
+                if (parent is DynamicKeywordStatementAst { CommandElements.Count: 3 } statement &&
+                    statement.CommandElements[2] is HashtableAst &&
+                    ReadInstanceName(statement) is not null)
+                {
+                    outermost = statement;
+                }
+            }
+
+            return outermost;
+        }
+
+        private static string? ReadInstanceName(DynamicKeywordStatementAst statement)
+        {
+            if (statement.CommandElements.Count < 3)
+            {
+                return null;
+            }
+
+            return statement.CommandElements[1] switch
+            {
+                StringConstantExpressionAst constant => constant.Value,
+                ExpandableStringExpressionAst expandable => expandable.Value,
+                _ => null
+            };
         }
 
         /// <summary>
@@ -111,7 +239,7 @@ namespace DSCParser.CSharp
             }
             else
             {
-                dscResourcesConverted = [.. _dscResources.Values];
+                dscResourcesConverted = _dscResources.Values.ToList();
             }
 
             if (string.IsNullOrEmpty(path) && string.IsNullOrEmpty(content))
@@ -434,20 +562,12 @@ namespace DSCParser.CSharp
         /// </summary>
         private static void ReportParseErrors(ParseError[] parseErrors, ConfigurationDefinitionAst? configAst, string errorPrefix)
         {
+            Dictionary<int, string?> describedStatements = [];
             foreach (ParseError error in parseErrors)
             {
-                if (IsOutsideConfiguration(error, configAst))
+                if (!IsOutsideConfiguration(error, configAst))
                 {
-                    continue;
-                }
-
-                if (IsRecoverableParseError(error))
-                {
-                    ReportWarning($"{errorPrefix}{DescribeParseError(error)}");
-                }
-                else
-                {
-                    throw new InvalidOperationException($"{errorPrefix}Error parsing configuration: {error.Message}");
+                    ReportParseError(error, configAst, errorPrefix, describedStatements);
                 }
             }
         }
@@ -539,9 +659,9 @@ namespace DSCParser.CSharp
         /// Converts a configuration against the keywords the caller registered from a schema cache.
         /// </summary>
         /// <remarks>
-        /// The Node body is reparsed on its own because the engine empties the DynamicKeyword table
-        /// when it enters a Configuration block, which would drop the registered keywords before any
-        /// resource inside is reached.
+        /// The Configuration body is reparsed on its own because the engine empties the DynamicKeyword
+        /// table when it enters a Configuration block, which would drop the registered keywords before
+        /// any resource inside is reached.
         /// </remarks>
         private static List<DscResourceInstance> ConvertUsingRegisteredKeywords(
             string dscContent, string errorPrefix, DscParseOptions options)
@@ -553,25 +673,23 @@ namespace DSCParser.CSharp
             }
 
             string content = RemoveImportDscResourceStatements(dscContent);
+            string? configurationBody = FindConfigurationBody(content);
+            string body = configurationBody ?? content;
 
-            // Without a Node statement the whole content is the fragment, so a configuration
-            // fragment holding nothing but resource blocks still converts.
-            string nodeBody = FindNodeBody(content) ?? content;
-
-            ScriptBlockAst nodeAst;
+            ScriptBlockAst bodyAst;
             Token[] tokens;
             ParseError[] parseErrors;
             try
             {
                 DscKeywordRegistry.MaterializeSchemaCacheKeywords();
-                nodeAst = Parser.ParseInput(nodeBody, out tokens, out parseErrors);
+                bodyAst = Parser.ParseInput(body, out tokens, out parseErrors);
 
                 if (HasFatalParseError(parseErrors, configAst: null) &&
-                    TryReparseWithQuotedValues(nodeBody, errorPrefix, hasFatalError: (errors, _) =>
+                    TryReparseWithQuotedValues(body, errorPrefix, hasFatalError: (errors, _) =>
                         HasFatalParseError(errors, configAst: null),
                         out ScriptBlockAst repairedAst, out Token[] repairedTokens, out ParseError[] repairedErrors))
                 {
-                    nodeAst = repairedAst;
+                    bodyAst = repairedAst;
                     tokens = repairedTokens;
                     parseErrors = repairedErrors;
                 }
@@ -581,84 +699,183 @@ namespace DSCParser.CSharp
                 DscKeywordRegistry.ClearKeywordTable();
             }
 
+            Dictionary<int, string?> describedStatements = [];
             foreach (ParseError error in parseErrors)
             {
-                if (IsRecoverableParseError(error))
-                {
-                    ReportWarning($"{errorPrefix}{DescribeParseError(error)}");
-                }
-                else
-                {
-                    throw new InvalidOperationException($"{errorPrefix}Error parsing configuration: {error.Message}");
-                }
+                ReportParseError(error, bodyAst, errorPrefix, describedStatements);
             }
 
-            List<DscResourceInstance> result = ReadResourceInstances(
-                nodeAst.EndBlock?.Statements ?? new ReadOnlyCollection<StatementAst>([]), options);
+            ReadOnlyCollection<StatementAst> statements = bodyAst.EndBlock?.Statements ?? new ReadOnlyCollection<StatementAst>([]);
+            List<DscResourceInstance> result = configurationBody is null && !ContainsNodeStatement(statements)
+                ? ReadResourceInstances(statements, options)
+                : ReadConfigurationStatements(statements, options);
 
             return options.IncludeComments ? UpdateWithMetadata(tokens, result) : result;
         }
 
         /// <summary>
-        /// Returns the statements of the configuration's Node block as parsable text, or null when
-        /// there is no Node statement.
+        /// Returns the statements of the content's Configuration block as parsable text at their
+        /// positions in the content, or null when there is no Configuration block.
         /// </summary>
-        private static string? FindNodeBody(string content)
+        private static string? FindConfigurationBody(string content)
         {
             ScriptBlockAst ast = Parser.ParseInput(content, out Token[] tokens, out ParseError[] _);
 
-            return FindNodeScriptBlock(ast) is { } body
-                ? ReadBlockContents(content, tokens, body.Extent.StartOffset)
+            return FindConfigurationAst(ast) is { } configAst
+                ? ReadBlockContents(content, tokens, configAst.Body.Extent.StartOffset)
                 : null;
         }
 
-        private static ScriptBlockExpressionAst? FindNodeScriptBlock(Ast ast)
+        private static bool ContainsNodeStatement(ReadOnlyCollection<StatementAst> statements)
         {
-            if (ast.Find(
-                    node => node is DynamicKeywordStatementAst { CommandElements.Count: 3 } keyword
-                            && IsBareWord(keyword.CommandElements[0], "Node")
-                            && keyword.CommandElements[2] is ScriptBlockExpressionAst,
-                    searchNestedScriptBlocks: true) is DynamicKeywordStatementAst dynamicNode)
+            for (int index = 0; index < statements.Count; index++)
             {
-                return (ScriptBlockExpressionAst)dynamicNode.CommandElements[2];
-            }
-
-            // Outside a Configuration block, Node is not a keyword and its body may be a statement of
-            // its own rather than an argument, depending on where the opening brace sits.
-            foreach (Ast block in ast.FindAll(node => node is NamedBlockAst or StatementBlockAst, true))
-            {
-                ReadOnlyCollection<StatementAst> statements = block is NamedBlockAst named
-                    ? named.Statements
-                    : ((StatementBlockAst)block).Statements;
-
-                for (int index = 0; index < statements.Count; index++)
+                if (TryReadNodeStatement(statements, index, out _, out _, out _) ||
+                    ListControlBlocks(statements[index]).Any(block => ContainsNodeStatement(block.Statements)))
                 {
-                    if (statements[index] is not PipelineAst pipeline ||
-                        pipeline.PipelineElements.Count != 1 ||
-                        pipeline.PipelineElements[0] is not CommandAst command ||
-                        command.CommandElements.Count is not (2 or 3) ||
-                        !IsBareWord(command.CommandElements[0], "Node"))
-                    {
-                        continue;
-                    }
-
-                    if (command.CommandElements.Count == 3 &&
-                        command.CommandElements[2] is ScriptBlockExpressionAst inline)
-                    {
-                        return inline;
-                    }
-
-                    if (index + 1 < statements.Count &&
-                        statements[index + 1] is PipelineAst next &&
-                        next.PipelineElements.Count == 1 &&
-                        next.PipelineElements[0] is CommandExpressionAst { Expression: ScriptBlockExpressionAst detached })
-                    {
-                        return detached;
-                    }
+                    return true;
                 }
             }
 
-            return null;
+            return false;
+        }
+
+        /// <summary>
+        /// The statement blocks of an if, loop, switch, try or trap statement, without blocks nested
+        /// deeper inside them.
+        /// </summary>
+        private static IEnumerable<StatementBlockAst> ListControlBlocks(StatementAst statement)
+        {
+            if (statement is not (IfStatementAst or LoopStatementAst or SwitchStatementAst or TryStatementAst or BlockStatementAst or TrapStatementAst))
+            {
+                return [];
+            }
+
+            return statement
+                .FindAll(ast => ast is StatementBlockAst block && IsOutermostBlockOf(block, statement), searchNestedScriptBlocks: false)
+                .Cast<StatementBlockAst>();
+        }
+
+        private static bool IsOutermostBlockOf(StatementBlockAst block, StatementAst statement)
+        {
+            for (Ast? parent = block.Parent; parent is not null && parent != statement; parent = parent.Parent)
+            {
+                if (parent is StatementBlockAst)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Reads the resources of every Node block and the resources beside them in document order,
+        /// passing over any other statement of the configuration.
+        /// </summary>
+        private static List<DscResourceInstance> ReadConfigurationStatements(
+            ReadOnlyCollection<StatementAst> statements, DscParseOptions options)
+        {
+            List<DscResourceInstance> result = [];
+            List<string> nodeNames = [];
+
+            ReadConfigurationStatements(statements, options, result, nodeNames);
+            ReportDifferentNodeNames(nodeNames);
+
+            return result;
+        }
+
+        private static void ReadConfigurationStatements(
+            ReadOnlyCollection<StatementAst> statements, DscParseOptions options, List<DscResourceInstance> result, List<string> nodeNames)
+        {
+            for (int index = 0; index < statements.Count; index++)
+            {
+                if (TryReadNodeStatement(statements, index, out string? nodeName, out ScriptBlockExpressionAst? nodeBody, out int consumed))
+                {
+                    nodeNames.Add(nodeName!);
+                    result.AddRange(ReadResourceInstances(
+                        nodeBody!.ScriptBlock.EndBlock?.Statements ?? new ReadOnlyCollection<StatementAst>([]), options));
+                    index += consumed;
+                }
+                else if (statements[index] is DynamicKeywordStatementAst { CommandElements.Count: 3 } resource &&
+                         resource.CommandElements[2] is HashtableAst)
+                {
+                    if (ReadResourceInstance(resource, options) is { } instance)
+                    {
+                        result.Add(instance);
+                    }
+                }
+                else
+                {
+                    foreach (StatementBlockAst block in ListControlBlocks(statements[index]))
+                    {
+                        ReadConfigurationStatements(block.Statements, options, result, nodeNames);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Recognizes a Node statement where Node is not a keyword. Its body is either an argument or,
+        /// when the brace opens on the next line, the statement after it.
+        /// </summary>
+        /// <returns>True for a Node statement, with the number of additional statements it spans.</returns>
+        private static bool TryReadNodeStatement(
+            ReadOnlyCollection<StatementAst> statements,
+            int index,
+            out string? nodeName,
+            out ScriptBlockExpressionAst? body,
+            out int consumed)
+        {
+            nodeName = null;
+            body = null;
+            consumed = 0;
+
+            if (statements[index] is not PipelineAst pipeline ||
+                pipeline.PipelineElements.Count != 1 ||
+                pipeline.PipelineElements[0] is not CommandAst command ||
+                command.CommandElements.Count is not (2 or 3) ||
+                !IsBareWord(command.CommandElements[0], "Node"))
+            {
+                return false;
+            }
+
+            if (command.CommandElements.Count == 3 &&
+                command.CommandElements[2] is ScriptBlockExpressionAst inline)
+            {
+                body = inline;
+            }
+            else if (command.CommandElements.Count == 2 &&
+                     index + 1 < statements.Count &&
+                     statements[index + 1] is PipelineAst next &&
+                     next.PipelineElements.Count == 1 &&
+                     next.PipelineElements[0] is CommandExpressionAst { Expression: ScriptBlockExpressionAst detached })
+            {
+                body = detached;
+                consumed = 1;
+            }
+            else
+            {
+                return false;
+            }
+
+            nodeName = ReadNodeName(command.CommandElements[1]);
+            return true;
+        }
+
+        private static string ReadNodeName(CommandElementAst element)
+        {
+            return element is StringConstantExpressionAst constant ? constant.Value : element.Extent.Text;
+        }
+
+        private static void ReportDifferentNodeNames(List<string> nodeNames)
+        {
+            List<string> distinct = nodeNames.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (distinct.Count > 1)
+            {
+                ReportWarning(
+                    $"Read the resources of the Node blocks {string.Join(", ", distinct.Select(name => $"'{name}'"))} into one configuration.");
+            }
         }
 
         // Tokens keep every brace where the AST closes a block early at a property named like a
@@ -679,11 +896,25 @@ namespace DSCParser.CSharp
                 }
                 else if (token.Kind is TokenKind.RCurly && --depth == 0)
                 {
-                    return content.Substring(openOffset + 1, token.Extent.StartOffset - openOffset - 1);
+                    return BlankBefore(content, openOffset + 1, token.Extent.StartOffset);
                 }
             }
 
-            return content.Substring(openOffset);
+            return BlankBefore(content, openOffset, content.Length);
+        }
+
+        // Line breaks before start stay and every other character there becomes a space, which keeps
+        // the line, column and offset of each parsed position equal to the content's.
+        private static string BlankBefore(string content, int start, int end)
+        {
+            StringBuilder text = new(end);
+            for (int index = 0; index < start; index++)
+            {
+                char character = content[index];
+                _ = text.Append(character is '\r' or '\n' ? character : ' ');
+            }
+
+            return text.Append(content, start, end - start).ToString();
         }
 
         private static bool IsBareWord(CommandElementAst element, string value)
@@ -694,22 +925,53 @@ namespace DSCParser.CSharp
 
         private static List<DscResourceInstance> GetResourceInstances(ConfigurationDefinitionAst configAst, DscParseOptions? options = null)
         {
-            // Try to find Node statement first
-            DynamicKeywordStatementAst dynamicNodeStatement = configAst.Body.ScriptBlock.EndBlock.Statements
-                .OfType<DynamicKeywordStatementAst>()
-                .FirstOrDefault(dynAst =>
-                        dynAst.CommandElements.Count > 0 &&
-                        dynAst.CommandElements[0] is StringConstantExpressionAst constant &&
-                        constant.StringConstantType == StringConstantType.BareWord &&
-                        constant.Value.Equals("Node", StringComparison.OrdinalIgnoreCase))
-                ?? throw new InvalidOperationException("No Node statement found in the DSC configuration");
+            List<DscResourceInstance> result = [];
+            List<string> nodeNames = [];
 
-            ScriptBlockExpressionAst nodeBody = dynamicNodeStatement.CommandElements[2] as ScriptBlockExpressionAst
-                ?? throw new InvalidOperationException("Failed to parse Node body in DSC configuration.");
-            NamedBlockAst? scriptBlockBody = nodeBody.ScriptBlock.Find(ast => ast is NamedBlockAst, false) as NamedBlockAst
-                ?? throw new InvalidOperationException("Failed to parse Node body statements in DSC configuration.");
+            ReadKeywordStatements(configAst.Body.ScriptBlock.EndBlock.Statements, options, result, nodeNames);
 
-            return ReadResourceInstances(scriptBlockBody.Statements, options);
+            if (nodeNames.Count == 0)
+            {
+                throw new InvalidOperationException("No Node statement found in the DSC configuration");
+            }
+
+            ReportDifferentNodeNames(nodeNames);
+
+            return result;
+        }
+
+        private static void ReadKeywordStatements(
+            ReadOnlyCollection<StatementAst> statements, DscParseOptions? options, List<DscResourceInstance> result, List<string> nodeNames)
+        {
+            foreach (StatementAst statement in statements)
+            {
+                if (statement is not DynamicKeywordStatementAst { CommandElements.Count: > 1 } keyword)
+                {
+                    foreach (StatementBlockAst block in ListControlBlocks(statement))
+                    {
+                        ReadKeywordStatements(block.Statements, options, result, nodeNames);
+                    }
+
+                    continue;
+                }
+
+                if (IsBareWord(keyword.CommandElements[0], "Node"))
+                {
+                    ScriptBlockExpressionAst nodeBody = (keyword.CommandElements.Count == 3 ? keyword.CommandElements[2] : null) as ScriptBlockExpressionAst
+                        ?? throw new InvalidOperationException("Failed to parse Node body in DSC configuration.");
+                    NamedBlockAst scriptBlockBody = nodeBody.ScriptBlock.Find(ast => ast is NamedBlockAst, false) as NamedBlockAst
+                        ?? throw new InvalidOperationException("Failed to parse Node body statements in DSC configuration.");
+
+                    nodeNames.Add(ReadNodeName(keyword.CommandElements[1]));
+                    result.AddRange(ReadResourceInstances(scriptBlockBody.Statements, options));
+                }
+                else if (keyword.CommandElements.Count == 3 &&
+                         keyword.CommandElements[2] is HashtableAst &&
+                         ReadResourceInstance(keyword, options) is { } instance)
+                {
+                    result.Add(instance);
+                }
+            }
         }
 
         private static List<DscResourceInstance> ReadResourceInstances(
@@ -725,55 +987,50 @@ namespace DSCParser.CSharp
                     continue;
                 }
 
-                DscResourceInstance currentResourceInfo = new();
-                Dictionary<string, object?> currentResourceProperties = [];
-
-                // CommandElements
-                // 0 - Resource Type
-                // 1 - Resource Instance Name
-                // 2 - Key/Pair Value list of parameters.
-                string resourceType = resource.CommandElements[0].ToString();
-                string resourceInstanceName = string.Empty;
-                if (resource.CommandElements[1] is StringConstantExpressionAst resourceInstanceNameAst)
+                if (ReadResourceInstance(resource, options) is { } instance)
                 {
-                    resourceInstanceName = resourceInstanceNameAst.Value;
+                    result.Add(instance);
                 }
-                else if (resource.CommandElements[1] is ExpandableStringExpressionAst resourceInstanceNameExpAst)
-                {
-                    resourceInstanceName = resourceInstanceNameExpAst.Value;
-                }
-                else
-                {
-                    throw new InvalidOperationException("Failed to parse resource instance name in DSC configuration.");
-                }
-
-                currentResourceInfo.ResourceName = resourceType;
-                currentResourceInfo.ResourceInstanceName = resourceInstanceName;
-
-                if (!_dscResources.ContainsKey(resourceType))
-                {
-                    ReportWarning(
-                        $"Resource '{resourceType}' (instance '{resourceInstanceName}') was not found among the loaded DSC resources and was omitted from the converted configuration.");
-                    continue;
-                }
-
-                foreach (Tuple<ExpressionAst, StatementAst> keyValuePair in ((HashtableAst)resource.CommandElements[2]).KeyValuePairs)
-                {
-                    // Process every kind of property except single CIM instance assignments like:
-                    // PsDscRunAsCredential = MSFT_Credential{
-                    //    UserName = $ConfigurationData.NonNodeData.AdminUserName
-                    //    Password = $ConfigurationData.NonNodeData.AdminPassword
-                    // };
-                    currentResourceProperties.Add(
-                        keyValuePair.Item1.ToString(),
-                        ProcessStatementValue(keyValuePair.Item2, options?.IncludeCIMInstanceInfo ?? true));
-                }
-
-                currentResourceInfo.Properties = currentResourceProperties;
-                result.Add(currentResourceInfo);
             }
 
             return result;
+        }
+
+        private static DscResourceInstance? ReadResourceInstance(DynamicKeywordStatementAst resource, DscParseOptions? options)
+        {
+            // CommandElements
+            // 0 - Resource Type
+            // 1 - Resource Instance Name
+            // 2 - Key/Pair Value list of parameters.
+            string resourceType = resource.CommandElements[0].ToString();
+            string resourceInstanceName = resource.CommandElements[1] switch
+            {
+                StringConstantExpressionAst resourceInstanceNameAst => resourceInstanceNameAst.Value,
+                ExpandableStringExpressionAst resourceInstanceNameExpAst => resourceInstanceNameExpAst.Value,
+                _ => throw new InvalidOperationException("Failed to parse resource instance name in DSC configuration.")
+            };
+
+            if (!_dscResources.ContainsKey(resourceType))
+            {
+                ReportWarning(
+                    $"Resource '{resourceType}' (instance '{resourceInstanceName}') was not found among the loaded DSC resources and was omitted from the converted configuration.");
+                return null;
+            }
+
+            Dictionary<string, object?> properties = [];
+            foreach (Tuple<ExpressionAst, StatementAst> keyValuePair in ((HashtableAst)resource.CommandElements[2]).KeyValuePairs)
+            {
+                properties.Add(
+                    keyValuePair.Item1.ToString(),
+                    ProcessStatementValue(keyValuePair.Item2, options?.IncludeCIMInstanceInfo ?? true));
+            }
+
+            return new DscResourceInstance
+            {
+                ResourceName = resourceType,
+                ResourceInstanceName = resourceInstanceName,
+                Properties = properties
+            };
         }
 
         /// <summary>
@@ -866,9 +1123,9 @@ namespace DSCParser.CSharp
 
                     // Each line in the script block (the contents of the scriptblock is defined as a "NamedBlockAst") is a PipelineAst
                     ReadOnlyCollection<StatementAst> propertyStatementsInCimInstanceBody = cimInstanceBody.ScriptBlock.EndBlock.Statements;
-                    foreach (StatementAst statement in propertyStatementsInCimInstanceBody)
+                    for (int index = 0; index < propertyStatementsInCimInstanceBody.Count; index++)
                     {
-                        PipelineAst pipelineAst = statement as PipelineAst
+                        PipelineAst pipelineAst = propertyStatementsInCimInstanceBody[index] as PipelineAst
                             ?? throw new InvalidOperationException("Failed to parse as pipeline statement in CIM instance scriptblock.");
 
                         CommandAst propertyStatement = pipelineAst.PipelineElements[0] as CommandAst
@@ -876,6 +1133,16 @@ namespace DSCParser.CSharp
 
                         // Evaluate each property assignment
                         (string, object?) res = ProcessCommandAst(propertyStatement, includeCimInstanceInfo);
+
+                        // A line ending in "=" takes its value from the statement on the next line
+                        if (IsAssignmentWithoutValue(propertyStatement) &&
+                            index + 1 < propertyStatementsInCimInstanceBody.Count &&
+                            propertyStatementsInCimInstanceBody[index + 1] is PipelineAst { PipelineElements.Count: 1 } valuePipeline)
+                        {
+                            res.Item2 = ProcessPipelineValue(valuePipeline, includeCimInstanceInfo);
+                            index++;
+                        }
+
                         result.Add(res.Item1, res.Item2);
                     }
 
@@ -902,13 +1169,54 @@ namespace DSCParser.CSharp
                 if (assignmentOperator.Value.Equals("="))
                 {
                     StringConstantExpressionAst key = (StringConstantExpressionAst)elements[0];
-                    return (key.Value, ProcessExpressionAst((ExpressionAst)elements[2], includeCimInstanceInfo));
+                    if (elements.Count == 2)
+                    {
+                        return (key.Value, null);
+                    }
+
+                    return (key.Value, elements.Count == 3 && elements[2] is ExpressionAst value
+                        ? ProcessExpressionAst(value, includeCimInstanceInfo)
+                        : ProcessArgumentsAsExpression(commandAst, elements[2], elements[elements.Count - 1], includeCimInstanceInfo));
                 }
 
                 return ("", commandAst.ToString());
             }
 
             return ("", commandAst.ToString());
+        }
+
+        private static bool IsAssignmentWithoutValue(CommandAst commandAst)
+        {
+            return commandAst.CommandElements.Count == 2 &&
+                   commandAst.CommandElements[0] is StringConstantExpressionAst &&
+                   commandAst.CommandElements[1] is StringConstantExpressionAst { Value: "=" };
+        }
+
+        private static bool IsCimInstanceCommand(CommandAst commandAst)
+        {
+            ReadOnlyCollection<CommandElementAst> elements = commandAst.CommandElements;
+
+            return elements.Count >= 2 &&
+                   (elements.Count is 2 or 3 ? elements[1] : elements[elements.Count - 1]) is ScriptBlockExpressionAst;
+        }
+
+        /// <summary>
+        /// A command that is not a CIM instance is kept as its text.
+        /// </summary>
+        private static object ProcessPipelineValue(PipelineAst pipeline, bool includeCimInstanceInfo)
+        {
+            switch (pipeline.PipelineElements[0])
+            {
+                case CommandExpressionAst { Expression: { } expression }:
+                    return ProcessExpressionAst(expression, includeCimInstanceInfo);
+
+                case CommandAst command when IsCimInstanceCommand(command):
+                    return ProcessCommandAst(command, includeCimInstanceInfo).Item2!;
+
+                default:
+                    ReportNonConstantValue(pipeline.Extent.Text, pipeline.Extent.StartLineNumber);
+                    return pipeline.Extent.Text;
+            }
         }
 
         private static object ProcessExpressionAst(ExpressionAst expr, bool includeCimInstanceInfo)
@@ -927,82 +1235,147 @@ namespace DSCParser.CSharp
                 ExpandableStringExpressionAst expString => expString.Value,
                 // A hashtable like @{key=value; key2=value2}
                 HashtableAst hashtable => ProcessHashtableExpressionAst(hashtable, includeCimInstanceInfo),
+                // A list without the array operator like "value1", "value2"
+                ArrayLiteralAst arrayLiteral => arrayLiteral.Elements.Select(element => ProcessExpressionAst(element, includeCimInstanceInfo)).ToList(),
+                BinaryExpressionAst { Operator: TokenKind.Plus } sum => ProcessSumExpressionAst(sum),
                 _ => expr.ToString()
             };
         }
 
+        /// <summary>
+        /// Reads the arguments of a command-form property assignment, such as "Name = 'a' + 'b'" in a
+        /// CIM instance body, as the one expression they spell.
+        /// </summary>
+        private static object ProcessArgumentsAsExpression(
+            CommandAst commandAst, CommandElementAst first, CommandElementAst last, bool includeCimInstanceInfo)
+        {
+            string text = commandAst.Extent.Text.Substring(
+                first.Extent.StartOffset - commandAst.Extent.StartOffset,
+                last.Extent.EndOffset - first.Extent.StartOffset);
+
+            // The padding keeps the line numbers of the reparsed expression equal to the content's.
+            string padded = new string('\n', first.Extent.StartLineNumber - 1) +
+                            new string(' ', first.Extent.StartColumnNumber - 1) +
+                            text;
+
+            ScriptBlockAst parsed = Parser.ParseInput(padded, out Token[] _, out ParseError[] errors);
+            if (errors.Length == 0 &&
+                parsed.EndBlock?.Statements is { Count: 1 } statements &&
+                statements[0] is PipelineAst { PipelineElements.Count: 1 } pipeline &&
+                pipeline.PipelineElements[0] is CommandExpressionAst { Expression: { } expression })
+            {
+                return ProcessExpressionAst(expression, includeCimInstanceInfo);
+            }
+
+            ReportNonConstantValue(text, first.Extent.StartLineNumber);
+            return text;
+        }
+
+        private static object ProcessSumExpressionAst(BinaryExpressionAst sum)
+        {
+            if (TryFoldConstant(sum, out object? value))
+            {
+                return value!;
+            }
+
+            ReportNonConstantValue(sum.Extent.Text, sum.Extent.StartLineNumber);
+            return sum.Extent.Text;
+        }
+
+        private static void ReportNonConstantValue(string text, int line)
+        {
+            ReportWarning($"The value '{text}' (line {line}) is not a constant expression and was kept as text.");
+        }
+
+        private static bool TryFoldConstant(ExpressionAst expression, out object? value)
+        {
+            value = null;
+
+            switch (expression)
+            {
+                case ConstantExpressionAst constant:
+                    value = constant.Value;
+                    return true;
+
+                case ParenExpressionAst { Pipeline: PipelineAst { PipelineElements.Count: 1 } pipeline }
+                    when pipeline.PipelineElements[0] is CommandExpressionAst inner:
+                    return TryFoldConstant(inner.Expression, out value);
+
+                case BinaryExpressionAst { Operator: TokenKind.Plus } sum:
+                    return TryFoldConstant(sum.Left, out object? left) &&
+                           TryFoldConstant(sum.Right, out object? right) &&
+                           TryAddConstants(left, right, out value);
+
+                default:
+                    return false;
+            }
+        }
+
+        private static bool TryAddConstants(object? left, object? right, out object? value)
+        {
+            value = null;
+
+            if (left is string text)
+            {
+                value = text + Convert.ToString(right, CultureInfo.InvariantCulture);
+                return true;
+            }
+
+            if (left is int or long && right is int or long)
+            {
+                long total = Convert.ToInt64(left, CultureInfo.InvariantCulture) + Convert.ToInt64(right, CultureInfo.InvariantCulture);
+                value = total is >= int.MinValue and <= int.MaxValue ? (int)total : (object)total;
+                return true;
+            }
+
+            if (left is int or long or double && right is int or long or double)
+            {
+                value = Convert.ToDouble(left, CultureInfo.InvariantCulture) + Convert.ToDouble(right, CultureInfo.InvariantCulture);
+                return true;
+            }
+
+            return false;
+        }
+
         private static List<object> ProcessArrayExpressionAst(ArrayExpressionAst arrayAst, bool includeCimInstanceInfo)
         {
-            StatementBlockAst arrayDefinition = arrayAst.SubExpression;
+            List<object> values = [];
 
-            if (arrayDefinition.Statements.Count == 0)
+            foreach (StatementAst statement in arrayAst.SubExpression.Statements)
             {
-                return [];
-            }
+                switch (statement)
+                {
+                    // A CIM instance whose class is a registered keyword
+                    case DynamicKeywordStatementAst cimInstance:
+                        values.Add(ProcessDynamicKeywordStatementAst(cimInstance, includeCimInstanceInfo));
+                        break;
 
-            // Arrays can contain strings, integers, variables, and CIM instances
-            // Strings, integers and variables are represented as a PipelineAst
-            PipelineAst? firstArrayValue = arrayDefinition.Statements[0] as PipelineAst;
-            if (firstArrayValue is not null)
-            {
-                List<object> returnList = [];
-                foreach (PipelineAst pipelineArrayValue in arrayDefinition.Statements.Cast<PipelineAst>())
-                {
-                    if (pipelineArrayValue.PipelineElements[0] is not CommandExpressionAst arrayElementDefinition)
-                    {
-                        // Complex array items, defined e.g. for Intune assignments
-                        // Assignments = @(
-                        //     MSFT_DeviceManagementManagedGooglePlayMobileAppAssignment{
-                        //         groupDisplayName = "AADGroup_10"
-                        //         deviceAndAppManagementAssignmentFilterType = "none"
-                        //         dataType = "#microsoft.graph.groupAssignmentTarget"
-                        //         intent = "required"
-                        //         assignmentSettings = MSFT_DeviceManagementManagedGooglePlayMobileAppAssignmentSettings{
-                        //             odataType = "#microsoft.graph.androidManagedStoreAppAssignmentSettings"
-                        //             autoUpdateMode = "priority"
-                        //         }
-                        //     }
-                        // );
-                        (string, object?) complexArrayItemTuple = ProcessCommandAst((CommandAst)pipelineArrayValue.PipelineElements[0], includeCimInstanceInfo);
-                        returnList.Add(complexArrayItemTuple.Item2!);
-                        continue;
-                    }
-                    switch (arrayElementDefinition.Expression)
-                    {
-                        // Array literals are arrays of strings like @("value1", "value2"), integers like @(1,2,3)
-                        // variables like @($var1, $var2), expandable strings like @("https://$OrganizationName/", "https://$TenantGuid/")
-                        // or more types of elements
-                        case ArrayLiteralAst arrayLiteral:
-                            foreach (ExpressionAst element in arrayLiteral.Elements)
-                            {
-                                returnList.Add(ProcessExpressionAst(element, includeCimInstanceInfo));
-                            }
-                            break;
-                        // Any other type of expression inside the array
-                        case ExpressionAst expression:
-                            returnList.Add(ProcessExpressionAst(expression, includeCimInstanceInfo));
-                            break;
-                        default:
-                            break;
-                    }
-                }
-                return returnList;
-            }
+                    // A CIM instance whose class is not a keyword, or a command
+                    case PipelineAst { PipelineElements.Count: 1 } pipeline when pipeline.PipelineElements[0] is CommandAst:
+                        values.Add(ProcessPipelineValue(pipeline, includeCimInstanceInfo));
+                        break;
 
-            // Arrays containing CIM instances are represented as DynamicKeywordStatementAst
-            List<object> arrayCimInstances = [];
-            foreach (StatementAst statement in arrayDefinition.Statements)
-            {
-                if (statement is DynamicKeywordStatementAst arrayCimInstance)
-                {
-                    arrayCimInstances.Add(ProcessDynamicKeywordStatementAst(arrayCimInstance, includeCimInstanceInfo));
-                }
-                else
-                {
-                    ReportWarning($"Skipped an unrecognized array element in the DSC configuration: {statement.Extent.Text}");
+                    // Values separated by commas, such as 'value1', 'value2', are one statement
+                    case PipelineAst { PipelineElements.Count: 1 } pipeline
+                        when pipeline.PipelineElements[0] is CommandExpressionAst { Expression: ArrayLiteralAst arrayLiteral }:
+                        foreach (ExpressionAst element in arrayLiteral.Elements)
+                        {
+                            values.Add(ProcessExpressionAst(element, includeCimInstanceInfo));
+                        }
+                        break;
+
+                    case PipelineAst { PipelineElements.Count: 1 } pipeline
+                        when pipeline.PipelineElements[0] is CommandExpressionAst { Expression: { } expression }:
+                        values.Add(ProcessExpressionAst(expression, includeCimInstanceInfo));
+                        break;
+
+                    default:
+                        ReportWarning($"Skipped an unrecognized array element in the DSC configuration: {statement.Extent.Text}");
+                        break;
                 }
             }
-            return arrayCimInstances;
+
+            return values;
         }
 
         private static Dictionary<string, object?> ProcessDynamicKeywordStatementAst(

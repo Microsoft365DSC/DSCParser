@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Management.Automation;
 using System.Management.Automation.Language;
 
@@ -13,6 +14,8 @@ namespace DSCParser.PSDSC
     /// </summary>
     internal static class DscSchemaCacheKeywords
     {
+        public const string MissingMandatoryPropertyErrorId = "MissingValueForMandatoryProperty";
+
         public static DynamicKeyword Build(object entry)
         {
             if (entry is null)
@@ -48,6 +51,15 @@ namespace DSCParser.PSDSC
                 keyword.Properties.Add(property.Key, BuildProperty(property.Value));
             }
 
+            List<string> mandatoryProperties = keyword.Properties
+                .Where(property => property.Value.Mandatory)
+                .Select(property => property.Key)
+                .ToList();
+            if (mandatoryProperties.Count > 0)
+            {
+                keyword.SemanticCheck = statement => CheckMandatoryProperties(statement, mandatoryProperties);
+            }
+
             return keyword;
         }
 
@@ -80,13 +92,35 @@ namespace DSCParser.PSDSC
             foreach (object pair in GetSequence(GetValue(source, "valueMap")))
             {
                 string? key = GetString(pair, "key");
-                if (!string.IsNullOrEmpty(key))
+                if (key is not null)
                 {
                     property.ValueMap[key] = GetString(pair, "value");
                 }
             }
 
             return property;
+        }
+
+        private static ParseError[]? CheckMandatoryProperties(DynamicKeywordStatementAst statement, List<string> mandatoryProperties)
+        {
+            if (statement.CommandElements.OfType<HashtableAst>().FirstOrDefault() is not HashtableAst body)
+            {
+                return null;
+            }
+
+            HashSet<string> present = new(
+                body.KeyValuePairs.Select(pair => pair.Item1).OfType<StringConstantExpressionAst>().Select(key => key.Value),
+                StringComparer.OrdinalIgnoreCase);
+
+            ParseError[] errors = mandatoryProperties
+                .Where(name => !present.Contains(name))
+                .Select(name => new ParseError(
+                    statement.CommandElements[0].Extent,
+                    MissingMandatoryPropertyErrorId,
+                    $"Resource '{statement.CommandElements[0].Extent.Text}' requires a value for the mandatory property '{name}'."))
+                .ToArray();
+
+            return errors.Length == 0 ? null : errors;
         }
 
         private static TEnum ParseEnum<TEnum>(string? value, TEnum fallback)

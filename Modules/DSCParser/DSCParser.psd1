@@ -12,7 +12,7 @@
     RootModule = 'DSCParser.psm1'
 
     # Version number of this module.
-    ModuleVersion = '3.1.0.6'
+    ModuleVersion = '3.1.0.7'
 
     # ID used to uniquely identify this module
     GUID = 'e168239a-233d-468d-9025-d6dfc0e4e2b6'
@@ -110,7 +110,18 @@
             IconUri = 'https://github.com/Microsoft365DSC/DSCParser/blob/master/Images/DSCParser.png?raw=true'
 
             # ReleaseNotes of this module
-            ReleaseNotes = '* Fixed an issue reading the Node block of a configuration parsed with registered keywords.'
+            ReleaseNotes = '* Fixed warning line numbers for configurations parsed with registered keywords.
+* Fixed an exception reading arrays that mix values and CIM instances.
+* Fixed resources lost from configurations without a Node block.
+* Missing mandatory properties are now warnings naming resource and instance.
+* Every Node block is now read, including blocks inside if or foreach.
+* A warning now reports Node blocks with different node names.
+* Resources placed beside a Node block are now read.
+* Constant string and number concatenations are now converted to their value.
+* Comma-separated lists without @() are now converted to arrays.
+* Commands inside arrays are kept as text with a warning.
+* Fixed reading a CIM property whose value starts on the next line.
+* Keywords registered from a schema cache now keep empty ValueMap entries.'
         } # End of PSData hashtable
 
     } # End of PrivateData hashtable

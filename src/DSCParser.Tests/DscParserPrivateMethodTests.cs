@@ -463,11 +463,11 @@ public class DscParserPrivateMethodTests
     [Fact]
     public void ProcessExpressionAst_WithUnknownExpression_ShouldReturnItsText()
     {
-        var expr = FindAst<BinaryExpressionAst>("1 + 2");
+        var expr = FindAst<BinaryExpressionAst>("1 - 2");
 
         var result = _processExpressionAst.Invoke(null, [expr, true]);
 
-        Assert.Equal("1 + 2", result);
+        Assert.Equal("1 - 2", result);
     }
 
     #endregion
@@ -515,13 +515,17 @@ public class DscParserPrivateMethodTests
     #region ProcessArrayExpressionAst
 
     [Fact]
-    public void ProcessArrayExpressionAst_WithCommandElement_ShouldProcessItAsComplexItem()
+    public void ProcessArrayExpressionAst_WithCommandElement_ShouldKeepItsTextAndWarn()
     {
-        var array = FindAst<ArrayExpressionAst>("@( Get-ChildItem )");
+        var array = FindAst<ArrayExpressionAst>("@( Get-Item $path )");
 
-        var result = (List<object>)_processArrayExpressionAst.Invoke(null, [array, true])!;
+        var warnings = CaptureWarnings(() =>
+        {
+            var result = (List<object>)_processArrayExpressionAst.Invoke(null, [array, true])!;
+            Assert.Equal("Get-Item $path", Assert.Single(result));
+        });
 
-        Assert.Single(result);
+        Assert.Contains("'Get-Item $path' (line 1) is not a constant expression", Assert.Single(warnings));
     }
 
     [Fact]
