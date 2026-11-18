@@ -61,10 +61,6 @@ public class DscParserPrivateMethodTests
         typeof(DscParser).GetMethod("ProcessArrayExpressionAst", BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("ProcessArrayExpressionAst method not found");
 
-    private static readonly MethodInfo _appendProperty =
-        typeof(DscParser).GetMethod("AppendProperty", BindingFlags.NonPublic | BindingFlags.Static)
-        ?? throw new InvalidOperationException("AppendProperty method not found");
-
     private static readonly MethodInfo _reportWarning =
         typeof(DscParser).GetMethod("ReportWarning", BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("ReportWarning method not found");
@@ -545,16 +541,16 @@ public class DscParserPrivateMethodTests
 
     #endregion
 
-    #region AppendProperty
+    #region ConvertFromDscObject
 
     [Fact]
-    public void AppendProperty_WithNonCollectionValue_ShouldAppendItsToString()
+    public void ConvertFromDscObject_WithNonCollectionValue_ShouldAppendItsToString()
     {
-        var sb = new StringBuilder();
+        Hashtable resource = new() { ["ResourceName"] = "Contoso", ["ResourceInstanceName"] = "A", ["Ratio"] = 3.14m };
 
-        _appendProperty.Invoke(null, [sb, "Ratio", 3.14, 1, "    ", 0]);
+        string emitted = DscParser.ConvertFromDscObject([resource]);
 
-        Assert.Equal("        Ratio = 3.14" + Environment.NewLine, sb.ToString());
+        Assert.Matches(@"\n    Ratio +=\s3\.14\r?\n", emitted);
     }
 
     [Fact]

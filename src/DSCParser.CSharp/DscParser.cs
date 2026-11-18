@@ -36,16 +36,6 @@ namespace DSCParser.CSharp
 
         private const string ImportDscResourcePlaceholder = "DscParserImportDscResource";
 
-        private const string MetadataPrefix = "_metadata_";
-
-        // Matches a string that is syntactically nothing but a variable reference,
-        // optionally scoped and with member access: $name, $scope:name, $config.Credential.
-        // Anything else that merely starts with '$' (e.g. "$OrganizationName\Default")
-        // must be emitted quoted or the generated text does not reparse.
-        private static readonly Regex BareVariableReferenceRegex = new(
-            @"^\$(?:\w+:)?\w+(?:\.\w+)*$",
-            RegexOptions.CultureInvariant | RegexOptions.Compiled);
-
         /// <summary>
         /// Receives non-fatal diagnostics such as unresolvable modules. When unset, they are dropped
         /// rather than written to the console, which would corrupt a PowerShell host's output stream.
@@ -379,65 +369,31 @@ namespace DSCParser.CSharp
         /// </summary>
         public static string ConvertFromDscObject(IEnumerable<Hashtable> dscResources, int childLevel = 0)
         {
-            StringBuilder result = new();
-            AppendDscObjects(result, dscResources, childLevel);
-            return result.ToString();
+            return new DscConfigurationEmitter(Environment.NewLine, isLiteralOnly: false, writesNestedResourceName: true)
+                .Write(dscResources, childLevel);
         }
 
         /// <summary>
-        /// Renders resources into <paramref name="result"/>. Nested hashtables and arrays recurse into
-        /// the same builder, so no intermediate strings are produced per nesting level.
+        /// Converts DSC objects back to DSC configuration text without a ResourceName line inside a block
         /// </summary>
-        private static void AppendDscObjects(StringBuilder result, IEnumerable<IDictionary> dscResources, int childLevel)
+        public static DscEmitResult ConvertFromDscObject(IEnumerable<Hashtable> dscResources, DscEmitOptions options, int childLevel = 0)
         {
-            string childSpacer = new(' ', childLevel * 4);
+            List<Hashtable> resources = dscResources.ToList();
 
-            foreach (IDictionary entry in dscResources)
+            if (options.IsLiteralOnly)
             {
-                List<string> sortedKeys = [];
-                int longestParameter = 0;
-                foreach (string key in entry.Keys)
+                foreach (Hashtable resource in resources)
                 {
-                    if (key.StartsWith(MetadataPrefix, StringComparison.OrdinalIgnoreCase))
+                    if (DscConfigurationEmitter.FindLiteralRefusal(resource) is { } refusal)
                     {
-                        continue;
-                    }
-
-                    sortedKeys.Add(key);
-                    if (key.Length > longestParameter)
-                    {
-                        longestParameter = key.Length;
+                        return DscEmitResult.Refused(refusal);
                     }
                 }
-                sortedKeys.Sort(StringComparer.Ordinal);
-
-                if (entry.Contains("CIMInstance"))
-                {
-                    _ = result.Append(childSpacer).Append(entry["CIMInstance"]).AppendLine("{");
-                }
-                else if (entry.Contains("ResourceName") && entry.Contains("ResourceInstanceName"))
-                {
-                    _ = result.Append(childSpacer).Append(entry["ResourceName"]).Append(" \"").Append(entry["ResourceInstanceName"]).AppendLine("\"");
-                    _ = result.Append(childSpacer).AppendLine("{");
-                }
-                else
-                {
-                    _ = result.Append(childSpacer).AppendLine("@{");
-                }
-
-                foreach (string property in sortedKeys)
-                {
-                    if (property is "ResourceInstanceName" or "CIMInstance" ||
-                        (childLevel == 0 && property is "ResourceName"))
-                    {
-                        continue;
-                    }
-
-                    AppendProperty(result, property, entry[property], longestParameter - property.Length + 1, childSpacer, childLevel);
-                }
-
-                _ = result.Append(childSpacer).Append('}').Append(Environment.NewLine);
             }
+
+            return DscEmitResult.Success(
+                new DscConfigurationEmitter(options.NewLine, options.IsLiteralOnly, writesNestedResourceName: false)
+                    .Write(resources, childLevel));
         }
 
         private static string RemoveModuleVersionInfo(string content, List<string>? uniqueModules = null)
@@ -1633,172 +1589,6 @@ namespace DSCParser.CSharp
             return parsedObjects;
         }
 
-        private static void AppendProperty(StringBuilder result, string property, object? value, int additionalSpaces, string childSpacer, int childLevel)
-        {
-            switch (value)
-            {
-                case string strValue:
-                    AppendPropertyPrefix(result, property, additionalSpaces, childSpacer);
-                    // Only a string that is entirely a variable reference is emitted bare
-                    if (strValue.Length > 1 && strValue[0] == '$' && BareVariableReferenceRegex.IsMatch(strValue))
-                    {
-                        _ = result.AppendLine(strValue);
-                    }
-                    else if (strValue.StartsWith("New-Object", StringComparison.Ordinal))
-                    {
-                        _ = result.AppendLine(strValue.TrimStart('"').TrimEnd('"'));
-                    }
-                    else
-                    {
-                        _ = AppendQuoted(result, strValue).AppendLine();
-                    }
-                    break;
 
-                case int intValue:
-                    AppendPropertyPrefix(result, property, additionalSpaces, childSpacer);
-                    _ = result.Append(intValue).AppendLine();
-                    break;
-
-                case bool boolValue:
-                    AppendPropertyPrefix(result, property, additionalSpaces, childSpacer);
-                    _ = result.Append('$').Append(boolValue).AppendLine();
-                    break;
-
-                // Covers Hashtable and the Dictionary instances the parser produces for CIM instances
-                case IDictionary dictionary:
-                    AppendPropertyPrefix(result, property, additionalSpaces, childSpacer);
-                    int contentStart = result.Length;
-                    AppendDscObjects(result, [dictionary], childLevel + 1);
-                    StripIndentOfOpeningLine(result, contentStart);
-                    break;
-
-                case IEnumerable sequence:
-                    AppendPropertyPrefix(result, property, additionalSpaces, childSpacer);
-                    AppendArray(result, sequence, childSpacer, childLevel);
-                    break;
-
-                default:
-                    if (value != null)
-                    {
-                        AppendPropertyPrefix(result, property, additionalSpaces, childSpacer);
-                        _ = result.Append(value).AppendLine();
-                    }
-                    break;
-            }
-        }
-
-        private static void AppendPropertyPrefix(StringBuilder result, string property, int additionalSpaces, string childSpacer)
-        {
-            _ = result.Append(childSpacer).Append("    ").Append(property).Append(' ', additionalSpaces).Append("= ");
-        }
-
-        private static readonly char[] QuoteEscapeCharacters = ['`', '"'];
-
-        private static StringBuilder AppendQuoted(StringBuilder result, string value)
-        {
-            if (value.IndexOfAny(QuoteEscapeCharacters) < 0)
-            {
-                return result.Append('"').Append(value).Append('"');
-            }
-
-            _ = result.Append('"');
-            foreach (char character in value)
-            {
-                if (character is '`' or '"')
-                {
-                    _ = result.Append('`');
-                }
-                _ = result.Append(character);
-            }
-            return result.Append('"');
-        }
-
-        private static void AppendArray(StringBuilder result, IEnumerable sequence, string childSpacer, int childLevel)
-        {
-            _ = result.Append("@(");
-
-            List<object?> items = [];
-            bool isSimpleArray = true;
-            foreach (object? item in sequence)
-            {
-                items.Add(item);
-                if (item is IDictionary)
-                {
-                    isSimpleArray = false;
-                }
-            }
-
-            if (items.Count == 0)
-            {
-                _ = result.AppendLine(")");
-                return;
-            }
-
-            if (isSimpleArray && items.Count == 1)
-            {
-                AppendArrayItem(result, items[0]);
-                _ = result.AppendLine(")");
-                return;
-            }
-
-            _ = result.AppendLine();
-            for (int i = 0; i < items.Count; i++)
-            {
-                if (i > 0)
-                {
-                    _ = result.Append(Environment.NewLine);
-                }
-
-                if (items[i] is IDictionary nested)
-                {
-                    AppendDscObjects(result, [nested], childLevel + 2);
-                    result.Length -= Environment.NewLine.Length;
-                }
-                else
-                {
-                    _ = result.Append(' ', childSpacer.Length + 8);
-                    AppendArrayItem(result, items[i]);
-                }
-            }
-            _ = result.AppendLine();
-
-            _ = result.Append(childSpacer).AppendLine("    )");
-        }
-
-        private static void AppendArrayItem(StringBuilder result, object? item)
-        {
-            if (item is string text)
-            {
-                _ = AppendQuoted(result, text);
-            }
-            else
-            {
-                _ = result.Append(item);
-            }
-        }
-
-        /// <summary>
-        /// Removes the leading indentation of the first rendered line when that line opens a block, so
-        /// the nested object starts directly after the "= " of its property assignment.
-        /// </summary>
-        private static void StripIndentOfOpeningLine(StringBuilder result, int contentStart)
-        {
-            int lineEnd = contentStart;
-            while (lineEnd < result.Length && result[lineEnd] is not '\r' and not '\n')
-            {
-                lineEnd++;
-            }
-
-            int indent = contentStart;
-            while (indent < lineEnd && result[indent] == ' ')
-            {
-                indent++;
-            }
-
-            if (indent > contentStart && lineEnd > contentStart && result[lineEnd - 1] == '{')
-            {
-                _ = result.Remove(contentStart, indent - contentStart);
-            }
-        }
     }
 }
