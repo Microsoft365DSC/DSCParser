@@ -23,6 +23,9 @@ namespace DSCParser.CSharp
     {
         private static readonly Dictionary<string, DscResourceInfo> _dscResources = new(StringComparer.OrdinalIgnoreCase);
 
+        [ThreadStatic]
+        private static ParseScope? t_scope;
+
         private static readonly Regex ImportDscResourceVersionRegex = new(
             @"(import-dscresource\b[^\n]*?)\s+-moduleversion\s+(?:""[^""]*""|'[^']*'|\S+)([^\n]*)",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -32,16 +35,6 @@ namespace DSCParser.CSharp
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Multiline | RegexOptions.Compiled);
 
         private const string ImportDscResourcePlaceholder = "DscParserImportDscResource";
-
-        private const string MetadataPrefix = "_metadata_";
-
-        // Matches a string that is syntactically nothing but a variable reference,
-        // optionally scoped and with member access: $name, $scope:name, $config.Credential.
-        // Anything else that merely starts with '$' (e.g. "$OrganizationName\Default")
-        // must be emitted quoted or the generated text does not reparse.
-        private static readonly Regex BareVariableReferenceRegex = new(
-            @"^\$(?:\w+:)?\w+(?:\.\w+)*$",
-            RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
         /// <summary>
         /// Receives non-fatal diagnostics such as unresolvable modules. When unset, they are dropped
@@ -58,7 +51,7 @@ namespace DSCParser.CSharp
             DscKeywordRegistry.Reset();
         }
 
-        private static void ReportWarning(string message) => WarningSink?.Invoke(message);
+        private static void ReportWarning(string message) => (t_scope?.WarningSink ?? WarningSink)?.Invoke(message);
 
         // A configuration exported by an older module version references resources and properties the
         // installed version no longer has. Warn and convert what is left instead of failing outright.
@@ -210,13 +203,30 @@ namespace DSCParser.CSharp
         }
 
         /// <summary>
-        /// Converts a DSC configuration file or content to DSC objects
+        /// Converts a DSC configuration file or content to DSC objects.
         /// </summary>
         public static List<DscResourceInstance> ConvertToDscObject(string? path = null, string content = "", DscParseOptions? options = null, List<object>? dscResources = null)
         {
-            options ??= new DscParseOptions();
+            return Parse(path, content, options, dscResources).Resources;
+        }
 
-            if (_dscResources.Count == 0 && dscResources == null)
+        /// <summary>
+        /// Converts DSC configuration content and lists the Node statements the conversion passed over.
+        /// </summary>
+        public static DscParseResult ParseConfiguration(string content, DscParseOptions? options = null, List<object>? dscResources = null)
+        {
+            (List<DscResourceInstance> resources, List<DscSkippedStatement> skippedStatements) = Parse(null, content, options, dscResources);
+
+            return new DscParseResult(resources, skippedStatements);
+        }
+
+        private static (List<DscResourceInstance> Resources, List<DscSkippedStatement> SkippedStatements) Parse(
+            string? path, string content, DscParseOptions? options, List<object>? dscResources)
+        {
+            options ??= new DscParseOptions();
+            DscKeywordSet? keywords = options.Keywords;
+
+            if (keywords is null && _dscResources.Count == 0 && dscResources == null)
             {
                 throw new InvalidOperationException("No DSC resources loaded. Please provide DSC resources to parse the configuration.");
             }
@@ -233,14 +243,24 @@ namespace DSCParser.CSharp
                         throw new InvalidOperationException("A supplied DSC resource has no Name and cannot be used for parsing.");
                     }
 
-                    _dscResources[mapped.Name!] = mapped;
+                    if (keywords is null)
+                    {
+                        _dscResources[mapped.Name!] = mapped;
+                    }
+
                     dscResourcesConverted.Add(mapped);
                 }
             }
             else
             {
-                dscResourcesConverted = _dscResources.Values.ToList();
+                dscResourcesConverted = keywords is null ? [.. _dscResources.Values] : [];
             }
+
+            HashSet<string>? loadedResources = keywords is null
+                ? null
+                : new HashSet<string>(
+                    dscResources is null ? keywords.Names : dscResourcesConverted.Select(resource => resource.Name!),
+                    StringComparer.OrdinalIgnoreCase);
 
             if (string.IsNullOrEmpty(path) && string.IsNullOrEmpty(content))
             {
@@ -250,10 +270,27 @@ namespace DSCParser.CSharp
             string dscContent = string.IsNullOrEmpty(content) ? File.ReadAllText(path!) : content;
             string errorPrefix = string.IsNullOrEmpty(path) ? string.Empty : $"{path} - ";
 
-            if (options.UseRegisteredKeywords)
+            ParseScope? outerScope = t_scope;
+            ParseScope scope = new(dscContent, options.WarningSink, loadedResources);
+            t_scope = scope;
+            try
             {
-                return ConvertUsingRegisteredKeywords(dscContent, errorPrefix, options);
+                List<DscResourceInstance> resources = options.UseRegisteredKeywords || keywords is not null
+                    ? ConvertUsingRegisteredKeywords(dscContent, errorPrefix, options)
+                    : ConvertUsingModules(dscContent, errorPrefix, options, dscResourcesConverted);
+
+                return (resources, scope.SkippedStatements);
             }
+            finally
+            {
+                t_scope = outerScope;
+            }
+        }
+
+        private static List<DscResourceInstance> ConvertUsingModules(
+            string dscContent, string errorPrefix, DscParseOptions options, List<DscResourceInfo> dscResourcesConverted)
+        {
+            string parseContent = BlankImportDscResourceStatements(dscContent);
 
             HashSet<string> referencedModules = new(StringComparer.OrdinalIgnoreCase);
             foreach (DscResourceInfo resource in dscResourcesConverted)
@@ -283,7 +320,6 @@ namespace DSCParser.CSharp
             {
                 RegisterKeywords(modulesToLoad, errorPrefix);
                 DscKeywordRegistry.MaterializeKeywordTable();
-                string parseContent = RemoveImportDscResourceStatements(dscContent);
                 ast = Parser.ParseInput(parseContent, out tokens, out parseErrors);
                 configAst = FindConfigurationAst(ast);
 
@@ -310,7 +346,6 @@ namespace DSCParser.CSharp
                 throw new InvalidOperationException("No Configuration definition found in the DSC content");
             }
 
-            // Get resource instances
             List<DscResourceInstance> resourceInstances = GetResourceInstances(configAst, options);
 
             // Add comment metadata if requested
@@ -340,69 +375,35 @@ namespace DSCParser.CSharp
         }
 
         /// <summary>
-        /// Converts DSC objects back to DSC configuration text
+        /// Converts DSC objects back to DSC configuration text.
         /// </summary>
         public static string ConvertFromDscObject(IEnumerable<Hashtable> dscResources, int childLevel = 0)
         {
-            StringBuilder result = new();
-            AppendDscObjects(result, dscResources, childLevel);
-            return result.ToString();
+            return new DscConfigurationWriter(Environment.NewLine, isLiteralOnly: false, writesNestedResourceName: true)
+                .Write(dscResources, childLevel);
         }
 
         /// <summary>
-        /// Renders resources into <paramref name="result"/>. Nested hashtables and arrays recurse into
-        /// the same builder, so no intermediate strings are produced per nesting level.
+        /// Converts DSC objects back to DSC configuration text without a ResourceName line inside a block.
         /// </summary>
-        private static void AppendDscObjects(StringBuilder result, IEnumerable<IDictionary> dscResources, int childLevel)
+        public static DscWriteResult ConvertFromDscObject(IEnumerable<Hashtable> dscResources, DscWriteOptions options, int childLevel = 0)
         {
-            string childSpacer = new(' ', childLevel * 4);
+            List<Hashtable> resources = [.. dscResources];
 
-            foreach (IDictionary entry in dscResources)
+            if (options.IsLiteralOnly)
             {
-                List<string> sortedKeys = [];
-                int longestParameter = 0;
-                foreach (string key in entry.Keys)
+                foreach (Hashtable resource in resources)
                 {
-                    if (key.StartsWith(MetadataPrefix, StringComparison.OrdinalIgnoreCase))
+                    if (DscConfigurationWriter.FindLiteralError(resource) is { } error)
                     {
-                        continue;
-                    }
-
-                    sortedKeys.Add(key);
-                    if (key.Length > longestParameter)
-                    {
-                        longestParameter = key.Length;
+                        return DscWriteResult.Failed(error);
                     }
                 }
-                sortedKeys.Sort(StringComparer.Ordinal);
-
-                if (entry.Contains("CIMInstance"))
-                {
-                    _ = result.Append(childSpacer).Append(entry["CIMInstance"]).AppendLine("{");
-                }
-                else if (entry.Contains("ResourceName") && entry.Contains("ResourceInstanceName"))
-                {
-                    _ = result.Append(childSpacer).Append(entry["ResourceName"]).Append(" \"").Append(entry["ResourceInstanceName"]).AppendLine("\"");
-                    _ = result.Append(childSpacer).AppendLine("{");
-                }
-                else
-                {
-                    _ = result.Append(childSpacer).AppendLine("@{");
-                }
-
-                foreach (string property in sortedKeys)
-                {
-                    if (property is "ResourceInstanceName" or "CIMInstance" ||
-                        (childLevel == 0 && property is "ResourceName"))
-                    {
-                        continue;
-                    }
-
-                    AppendProperty(result, property, entry[property], longestParameter - property.Length + 1, childSpacer, childLevel);
-                }
-
-                _ = result.Append(childSpacer).Append('}').Append(Environment.NewLine);
             }
+
+            return DscWriteResult.Success(
+                new DscConfigurationWriter(options.NewLine, options.IsLiteralOnly, writesNestedResourceName: false)
+                    .Write(resources, childLevel));
         }
 
         private static string RemoveModuleVersionInfo(string content, List<string>? uniqueModules = null)
@@ -513,9 +514,10 @@ namespace DSCParser.CSharp
             return modulesToLoad;
         }
 
-        private static string RemoveImportDscResourceStatements(string content)
+        // Spaces keep the offset of every later character equal to the content's.
+        private static string BlankImportDscResourceStatements(string content)
         {
-            return ImportDscResourceStatementRegex.Replace(content, string.Empty);
+            return ImportDscResourceStatementRegex.Replace(content, statement => new string(' ', statement.Length));
         }
 
         private static void RegisterKeywords(List<ModuleReference> modulesToLoad, string errorPrefix)
@@ -605,6 +607,8 @@ namespace DSCParser.CSharp
             tokens = repairedTokens;
             parseErrors = repairedErrors;
 
+            t_scope?.InsertedOffsets = FindInsertedOffsets(content, repaired);
+
             ReportWarning(
                 $"{errorPrefix}Quoted {repairedCount} unquoted value(s) that PowerShell cannot parse as an expression, " +
                 "such as a GUID substituted for a variable reference. They were converted as strings.");
@@ -612,7 +616,7 @@ namespace DSCParser.CSharp
             return true;
         }
 
-        // Matches a line holding nothing but a single bare token, either as the right-hand side of a
+        // Matches a line containing only a single bare token, either as the right-hand side of a
         // property assignment or as a standalone array element. Requiring a single token keeps
         // statements such as "Configuration Name" out of the repair.
         private static readonly Regex BareValueLineRegex = new(
@@ -648,6 +652,92 @@ namespace DSCParser.CSharp
             return result;
         }
 
+        // Every character of the content reappears in order between the inserted quotes.
+        private static List<int> FindInsertedOffsets(string content, string repaired)
+        {
+            List<int> inserted = [];
+            int read = 0;
+            for (int offset = 0; offset < repaired.Length; offset++)
+            {
+                if (read < content.Length && content[read] == repaired[offset])
+                {
+                    read++;
+                }
+                else
+                {
+                    inserted.Add(offset);
+                }
+            }
+
+            return inserted;
+        }
+
+        // The extent of a keyword statement ends before the closing brace of its body.
+        private static DscResourceExtent BuildBlockExtent(DynamicKeywordStatementAst resource)
+        {
+            return BuildExtent(resource.Extent, resource.CommandElements[resource.CommandElements.Count - 1].Extent);
+        }
+
+        private static DscResourceExtent BuildExtent(IScriptExtent first, IScriptExtent last)
+        {
+            return new DscResourceExtent(
+                MapToContent(first.StartOffset), MapToContent(last.EndOffset), first.StartLineNumber, last.EndLineNumber);
+        }
+
+        private static int MapToContent(int offset)
+        {
+            List<int>? inserted = t_scope?.InsertedOffsets;
+            if (inserted is null)
+            {
+                return offset;
+            }
+
+            int before = 0;
+            while (before < inserted.Count && inserted[before] < offset)
+            {
+                before++;
+            }
+
+            return offset - before;
+        }
+
+        private static void RecordSkippedStatement(
+            DscSkipReason reason, DscResourceExtent extent, string? resourceName, string? instanceName)
+        {
+            if (t_scope is not { } scope)
+            {
+                return;
+            }
+
+            string text = scope.Content.Substring(extent.StartOffset, extent.EndOffset - extent.StartOffset);
+            scope.SkippedStatements.Add(new DscSkippedStatement(reason, text, extent, resourceName, instanceName));
+        }
+
+        private static bool IsLoadedResource(string resourceType)
+        {
+            return t_scope?.LoadedResources is { } loaded ? loaded.Contains(resourceType) : _dscResources.ContainsKey(resourceType);
+        }
+
+        private sealed class ParseScope
+        {
+            public ParseScope(string content, Action<string>? warningSink, HashSet<string>? loadedResources)
+            {
+                Content = content;
+                WarningSink = warningSink;
+                LoadedResources = loadedResources;
+            }
+
+            public string Content { get; }
+
+            public Action<string>? WarningSink { get; }
+
+            public HashSet<string>? LoadedResources { get; }
+
+            public List<DscSkippedStatement> SkippedStatements { get; } = [];
+
+            public List<int>? InsertedOffsets { get; set; }
+        }
+
         private readonly struct ModuleReference(string name, Version? version)
         {
             public string Name { get; } = name;
@@ -666,13 +756,13 @@ namespace DSCParser.CSharp
         private static List<DscResourceInstance> ConvertUsingRegisteredKeywords(
             string dscContent, string errorPrefix, DscParseOptions options)
         {
-            if (!DscKeywordRegistry.HasSchemaCacheKeywords)
+            if (options.Keywords is null && !DscKeywordRegistry.HasSchemaCacheKeywords)
             {
                 throw new InvalidOperationException(
                     "No keywords are registered. Call DscKeywordRegistry.RegisterFromSchemaCache before parsing with UseRegisteredKeywords.");
             }
 
-            string content = RemoveImportDscResourceStatements(dscContent);
+            string content = BlankImportDscResourceStatements(dscContent);
             string? configurationBody = FindConfigurationBody(content);
             string body = configurationBody ?? content;
 
@@ -681,7 +771,15 @@ namespace DSCParser.CSharp
             ParseError[] parseErrors;
             try
             {
-                DscKeywordRegistry.MaterializeSchemaCacheKeywords();
+                if (options.Keywords is { } keywords)
+                {
+                    keywords.AddToKeywordTable();
+                }
+                else
+                {
+                    DscKeywordRegistry.MaterializeSchemaCacheKeywords();
+                }
+
                 bodyAst = Parser.ParseInput(body, out tokens, out parseErrors);
 
                 if (HasFatalParseError(parseErrors, configAst: null) &&
@@ -1010,10 +1108,11 @@ namespace DSCParser.CSharp
                 _ => throw new InvalidOperationException("Failed to parse resource instance name in DSC configuration.")
             };
 
-            if (!_dscResources.ContainsKey(resourceType))
+            if (!IsLoadedResource(resourceType))
             {
                 ReportWarning(
                     $"Resource '{resourceType}' (instance '{resourceInstanceName}') was not found among the loaded DSC resources and was omitted from the converted configuration.");
+                RecordSkippedStatement(DscSkipReason.UnloadedResource, BuildBlockExtent(resource), resourceType, resourceInstanceName);
                 return null;
             }
 
@@ -1029,7 +1128,8 @@ namespace DSCParser.CSharp
             {
                 ResourceName = resourceType,
                 ResourceInstanceName = resourceInstanceName,
-                Properties = properties
+                Properties = properties,
+                Extent = BuildBlockExtent(resource)
             };
         }
 
@@ -1047,6 +1147,7 @@ namespace DSCParser.CSharp
                 command.CommandElements[0] is not StringConstantExpressionAst resourceName)
             {
                 ReportWarning($"Skipped an unrecognized statement in the DSC configuration: {statements[index].Extent.Text}");
+                RecordSkippedStatement(DscSkipReason.UnrecognizedStatement, BuildExtent(statements[index].Extent, statements[index].Extent), null, null);
                 return 0;
             }
 
@@ -1058,7 +1159,11 @@ namespace DSCParser.CSharp
                 $"Resource '{resourceName.Value}' (instance '{instanceName}') could not be resolved against the imported module(s) " +
                 "and was omitted from the converted configuration. It was likely removed in the installed module version.");
 
-            return command.CommandElements.Count == 2 && IsDetachedResourceBody(statements, index + 1) ? 1 : 0;
+            int consumed = command.CommandElements.Count == 2 && IsDetachedResourceBody(statements, index + 1) ? 1 : 0;
+            RecordSkippedStatement(
+                DscSkipReason.UndefinedResource, BuildExtent(statements[index].Extent, statements[index + consumed].Extent), resourceName.Value, instanceName);
+
+            return consumed;
         }
 
         private static bool IsDetachedResourceBody(ReadOnlyCollection<StatementAst> statements, int index)
@@ -1510,172 +1615,6 @@ namespace DSCParser.CSharp
             return parsedObjects;
         }
 
-        private static void AppendProperty(StringBuilder result, string property, object? value, int additionalSpaces, string childSpacer, int childLevel)
-        {
-            switch (value)
-            {
-                case string strValue:
-                    AppendPropertyPrefix(result, property, additionalSpaces, childSpacer);
-                    // Only a string that is entirely a variable reference is emitted bare
-                    if (strValue.Length > 1 && strValue[0] == '$' && BareVariableReferenceRegex.IsMatch(strValue))
-                    {
-                        _ = result.AppendLine(strValue);
-                    }
-                    else if (strValue.StartsWith("New-Object", StringComparison.Ordinal))
-                    {
-                        _ = result.AppendLine(strValue.TrimStart('"').TrimEnd('"'));
-                    }
-                    else
-                    {
-                        _ = AppendQuoted(result, strValue).AppendLine();
-                    }
-                    break;
 
-                case int intValue:
-                    AppendPropertyPrefix(result, property, additionalSpaces, childSpacer);
-                    _ = result.Append(intValue).AppendLine();
-                    break;
-
-                case bool boolValue:
-                    AppendPropertyPrefix(result, property, additionalSpaces, childSpacer);
-                    _ = result.Append('$').Append(boolValue).AppendLine();
-                    break;
-
-                // Covers Hashtable and the Dictionary instances the parser produces for CIM instances
-                case IDictionary dictionary:
-                    AppendPropertyPrefix(result, property, additionalSpaces, childSpacer);
-                    int contentStart = result.Length;
-                    AppendDscObjects(result, [dictionary], childLevel + 1);
-                    StripIndentOfOpeningLine(result, contentStart);
-                    break;
-
-                case IEnumerable sequence:
-                    AppendPropertyPrefix(result, property, additionalSpaces, childSpacer);
-                    AppendArray(result, sequence, childSpacer, childLevel);
-                    break;
-
-                default:
-                    if (value != null)
-                    {
-                        AppendPropertyPrefix(result, property, additionalSpaces, childSpacer);
-                        _ = result.Append(value).AppendLine();
-                    }
-                    break;
-            }
-        }
-
-        private static void AppendPropertyPrefix(StringBuilder result, string property, int additionalSpaces, string childSpacer)
-        {
-            _ = result.Append(childSpacer).Append("    ").Append(property).Append(' ', additionalSpaces).Append("= ");
-        }
-
-        private static readonly char[] QuoteEscapeCharacters = ['`', '"'];
-
-        private static StringBuilder AppendQuoted(StringBuilder result, string value)
-        {
-            if (value.IndexOfAny(QuoteEscapeCharacters) < 0)
-            {
-                return result.Append('"').Append(value).Append('"');
-            }
-
-            _ = result.Append('"');
-            foreach (char character in value)
-            {
-                if (character is '`' or '"')
-                {
-                    _ = result.Append('`');
-                }
-                _ = result.Append(character);
-            }
-            return result.Append('"');
-        }
-
-        private static void AppendArray(StringBuilder result, IEnumerable sequence, string childSpacer, int childLevel)
-        {
-            _ = result.Append("@(");
-
-            List<object?> items = [];
-            bool isSimpleArray = true;
-            foreach (object? item in sequence)
-            {
-                items.Add(item);
-                if (item is IDictionary)
-                {
-                    isSimpleArray = false;
-                }
-            }
-
-            if (items.Count == 0)
-            {
-                _ = result.AppendLine(")");
-                return;
-            }
-
-            if (isSimpleArray && items.Count == 1)
-            {
-                AppendArrayItem(result, items[0]);
-                _ = result.AppendLine(")");
-                return;
-            }
-
-            _ = result.AppendLine();
-            for (int i = 0; i < items.Count; i++)
-            {
-                if (i > 0)
-                {
-                    _ = result.Append(Environment.NewLine);
-                }
-
-                if (items[i] is IDictionary nested)
-                {
-                    AppendDscObjects(result, [nested], childLevel + 2);
-                    result.Length -= Environment.NewLine.Length;
-                }
-                else
-                {
-                    _ = result.Append(' ', childSpacer.Length + 8);
-                    AppendArrayItem(result, items[i]);
-                }
-            }
-            _ = result.AppendLine();
-
-            _ = result.Append(childSpacer).AppendLine("    )");
-        }
-
-        private static void AppendArrayItem(StringBuilder result, object? item)
-        {
-            if (item is string text)
-            {
-                _ = AppendQuoted(result, text);
-            }
-            else
-            {
-                _ = result.Append(item);
-            }
-        }
-
-        /// <summary>
-        /// Removes the leading indentation of the first rendered line when that line opens a block, so
-        /// the nested object starts directly after the "= " of its property assignment.
-        /// </summary>
-        private static void StripIndentOfOpeningLine(StringBuilder result, int contentStart)
-        {
-            int lineEnd = contentStart;
-            while (lineEnd < result.Length && result[lineEnd] is not '\r' and not '\n')
-            {
-                lineEnd++;
-            }
-
-            int indent = contentStart;
-            while (indent < lineEnd && result[indent] == ' ')
-            {
-                indent++;
-            }
-
-            if (indent > contentStart && lineEnd > contentStart && result[lineEnd - 1] == '{')
-            {
-                _ = result.Remove(contentStart, indent - contentStart);
-            }
-        }
     }
 }
