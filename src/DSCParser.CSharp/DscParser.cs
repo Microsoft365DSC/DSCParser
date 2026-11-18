@@ -51,7 +51,7 @@ namespace DSCParser.CSharp
             DscKeywordRegistry.Reset();
         }
 
-        private static void ReportWarning(string message) => WarningSink?.Invoke(message);
+        private static void ReportWarning(string message) => (t_scope?.WarningSink ?? WarningSink)?.Invoke(message);
 
         // A configuration exported by an older module version references resources and properties the
         // installed version no longer has. Warn and convert what is left instead of failing outright.
@@ -224,8 +224,9 @@ namespace DSCParser.CSharp
             string? path, string content, DscParseOptions? options, List<object>? dscResources)
         {
             options ??= new DscParseOptions();
+            DscKeywordSet? keywords = options.Keywords;
 
-            if (_dscResources.Count == 0 && dscResources == null)
+            if (keywords is null && _dscResources.Count == 0 && dscResources == null)
             {
                 throw new InvalidOperationException("No DSC resources loaded. Please provide DSC resources to parse the configuration.");
             }
@@ -242,14 +243,24 @@ namespace DSCParser.CSharp
                         throw new InvalidOperationException("A supplied DSC resource has no Name and cannot be used for parsing.");
                     }
 
-                    _dscResources[mapped.Name!] = mapped;
+                    if (keywords is null)
+                    {
+                        _dscResources[mapped.Name!] = mapped;
+                    }
+
                     dscResourcesConverted.Add(mapped);
                 }
             }
             else
             {
-                dscResourcesConverted = _dscResources.Values.ToList();
+                dscResourcesConverted = keywords is null ? [.. _dscResources.Values] : [];
             }
+
+            HashSet<string>? loadedResources = keywords is null
+                ? null
+                : new HashSet<string>(
+                    dscResources is null ? keywords.Names : dscResourcesConverted.Select(resource => resource.Name!),
+                    StringComparer.OrdinalIgnoreCase);
 
             if (string.IsNullOrEmpty(path) && string.IsNullOrEmpty(content))
             {
@@ -260,11 +271,11 @@ namespace DSCParser.CSharp
             string errorPrefix = string.IsNullOrEmpty(path) ? string.Empty : $"{path} - ";
 
             ParseScope? outerScope = t_scope;
-            ParseScope scope = new(dscContent);
+            ParseScope scope = new(dscContent, options.WarningSink, loadedResources);
             t_scope = scope;
             try
             {
-                List<DscResourceInstance> resources = options.UseRegisteredKeywords
+                List<DscResourceInstance> resources = options.UseRegisteredKeywords || keywords is not null
                     ? ConvertUsingRegisteredKeywords(dscContent, errorPrefix, options)
                     : ConvertUsingModules(dscContent, errorPrefix, options, dscResourcesConverted);
 
@@ -378,7 +389,7 @@ namespace DSCParser.CSharp
         /// </summary>
         public static DscEmitResult ConvertFromDscObject(IEnumerable<Hashtable> dscResources, DscEmitOptions options, int childLevel = 0)
         {
-            List<Hashtable> resources = dscResources.ToList();
+            List<Hashtable> resources = [.. dscResources];
 
             if (options.IsLiteralOnly)
             {
@@ -597,10 +608,7 @@ namespace DSCParser.CSharp
             tokens = repairedTokens;
             parseErrors = repairedErrors;
 
-            if (t_scope is not null)
-            {
-                t_scope.InsertedOffsets = FindInsertedOffsets(content, repaired);
-            }
+            t_scope?.InsertedOffsets = FindInsertedOffsets(content, repaired);
 
             ReportWarning(
                 $"{errorPrefix}Quoted {repairedCount} unquoted value(s) that PowerShell cannot parse as an expression, " +
@@ -706,14 +714,25 @@ namespace DSCParser.CSharp
             scope.SkippedStatements.Add(new DscSkippedStatement(reason, text, extent, resourceName, instanceName));
         }
 
+        private static bool IsLoadedResource(string resourceType)
+        {
+            return t_scope?.LoadedResources is { } loaded ? loaded.Contains(resourceType) : _dscResources.ContainsKey(resourceType);
+        }
+
         private sealed class ParseScope
         {
-            public ParseScope(string content)
+            public ParseScope(string content, Action<string>? warningSink, HashSet<string>? loadedResources)
             {
                 Content = content;
+                WarningSink = warningSink;
+                LoadedResources = loadedResources;
             }
 
             public string Content { get; }
+
+            public Action<string>? WarningSink { get; }
+
+            public HashSet<string>? LoadedResources { get; }
 
             public List<DscSkippedStatement> SkippedStatements { get; } = [];
 
@@ -738,7 +757,7 @@ namespace DSCParser.CSharp
         private static List<DscResourceInstance> ConvertUsingRegisteredKeywords(
             string dscContent, string errorPrefix, DscParseOptions options)
         {
-            if (!DscKeywordRegistry.HasSchemaCacheKeywords)
+            if (options.Keywords is null && !DscKeywordRegistry.HasSchemaCacheKeywords)
             {
                 throw new InvalidOperationException(
                     "No keywords are registered. Call DscKeywordRegistry.RegisterFromSchemaCache before parsing with UseRegisteredKeywords.");
@@ -753,7 +772,15 @@ namespace DSCParser.CSharp
             ParseError[] parseErrors;
             try
             {
-                DscKeywordRegistry.MaterializeSchemaCacheKeywords();
+                if (options.Keywords is { } keywords)
+                {
+                    keywords.AddToKeywordTable();
+                }
+                else
+                {
+                    DscKeywordRegistry.MaterializeSchemaCacheKeywords();
+                }
+
                 bodyAst = Parser.ParseInput(body, out tokens, out parseErrors);
 
                 if (HasFatalParseError(parseErrors, configAst: null) &&
@@ -1082,7 +1109,7 @@ namespace DSCParser.CSharp
                 _ => throw new InvalidOperationException("Failed to parse resource instance name in DSC configuration.")
             };
 
-            if (!_dscResources.ContainsKey(resourceType))
+            if (!IsLoadedResource(resourceType))
             {
                 ReportWarning(
                     $"Resource '{resourceType}' (instance '{resourceInstanceName}') was not found among the loaded DSC resources and was omitted from the converted configuration.");
