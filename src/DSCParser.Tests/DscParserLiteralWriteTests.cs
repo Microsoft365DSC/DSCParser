@@ -6,9 +6,9 @@ using Xunit;
 
 namespace DSCParser.Tests;
 
-public class DscParserLiteralEmitTests
+public class DscParserLiteralWriteTests
 {
-    private static readonly DscEmitOptions LiteralOptions = new() { IsLiteralOnly = true, NewLine = "\n" };
+    private static readonly DscWriteOptions LiteralOptions = new() { IsLiteralOnly = true, NewLine = "\n" };
 
     [Fact]
     public void ConvertFromDscObject_InLiteralMode_ShouldQuoteCodeAsLiteralsAndKeepExportReferencesLive()
@@ -32,7 +32,7 @@ public class DscParserLiteralEmitTests
             ["Tick"] = "a`b",
         };
 
-        DscEmitResult result = DscParser.ConvertFromDscObject([resource], LiteralOptions);
+        DscWriteResult result = DscParser.ConvertFromDscObject([resource], LiteralOptions);
 
         Assert.Null(result.Refusal);
         Assert.Equal(
@@ -71,10 +71,10 @@ public class DscParserLiteralEmitTests
         Hashtable resource = new() { ["ResourceName"] = "ContosoPolicy", ["ResourceInstanceName"] = "Corp", ["Plain"] = "a" };
 
         string legacy = DscParser.ConvertFromDscObject([resource], childLevel: 2);
-        DscEmitResult emitted = DscParser.ConvertFromDscObject([resource], new DscEmitOptions(), childLevel: 2);
+        DscWriteResult written = DscParser.ConvertFromDscObject([resource], new DscWriteOptions(), childLevel: 2);
 
         Assert.Contains("ResourceName", legacy, StringComparison.Ordinal);
-        Assert.Equal(legacy.Replace("            ResourceName         = \"ContosoPolicy\"" + Environment.NewLine, string.Empty), emitted.Configuration);
+        Assert.Equal(legacy.Replace("            ResourceName         = \"ContosoPolicy\"" + Environment.NewLine, string.Empty), written.Configuration);
     }
 
     public static TheoryData<string, object, string?, string?> RefusedResources() => new()
@@ -96,7 +96,7 @@ public class DscParserLiteralEmitTests
         Hashtable resource = new() { ["ResourceName"] = "ContosoPolicy", ["ResourceInstanceName"] = "Corp" };
         resource[key] = value;
 
-        DscEmitResult result = DscParser.ConvertFromDscObject([resource], LiteralOptions);
+        DscWriteResult result = DscParser.ConvertFromDscObject([resource], LiteralOptions);
 
         Assert.NotNull(result.Refusal);
         Assert.Equal((refusedInstance, refusedSetting), (result.Refusal.InstanceName, result.Refusal.Setting));

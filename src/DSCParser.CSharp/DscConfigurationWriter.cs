@@ -7,7 +7,7 @@ using System.Text.RegularExpressions;
 
 namespace DSCParser.CSharp
 {
-    internal sealed class DscConfigurationEmitter
+    internal sealed class DscConfigurationWriter
     {
         private const string MetadataPrefix = "_metadata_";
 
@@ -20,7 +20,7 @@ namespace DSCParser.CSharp
         // Matches a string that is syntactically nothing but a variable reference,
         // optionally scoped and with member access: $name, $scope:name, $config.Credential.
         // Anything else that merely starts with '$' (e.g. "$OrganizationName\Default")
-        // must be emitted quoted or the generated text does not reparse.
+        // must be written quoted or the generated text does not reparse.
         private static readonly Regex BareVariableReferenceRegex = new(
             @"^\$(?:\w+:)?\w+(?:\.\w+)*$",
             RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -35,7 +35,7 @@ namespace DSCParser.CSharp
 
         private readonly bool _writesNestedResourceName;
 
-        internal DscConfigurationEmitter(string newLine, bool isLiteralOnly, bool writesNestedResourceName)
+        internal DscConfigurationWriter(string newLine, bool isLiteralOnly, bool writesNestedResourceName)
         {
             _newLine = newLine;
             _isLiteralOnly = isLiteralOnly;
@@ -48,14 +48,14 @@ namespace DSCParser.CSharp
             return _text.ToString();
         }
 
-        internal static DscEmitRefusal? FindLiteralRefusal(IDictionary resource)
+        internal static DscWriteRefusal? FindLiteralRefusal(IDictionary resource)
         {
             string? type = ReadText(resource, ResourceNameKey);
             string? instance = ReadText(resource, InstanceNameKey);
 
             if (type is null || !DscValueText.IsIdentifier(type) || instance is null || DscValueText.HasLineBreak(instance))
             {
-                return new DscEmitRefusal(type, instance, null);
+                return new DscWriteRefusal(type, instance, null);
             }
 
             // A setting named CIMInstance would be written as the block header.
@@ -63,7 +63,7 @@ namespace DSCParser.CSharp
                 ? CimTypeKey
                 : FindRefusedSetting(resource, path: null, isCimInstance: false);
 
-            return setting is null ? null : new DscEmitRefusal(type, instance, setting);
+            return setting is null ? null : new DscWriteRefusal(type, instance, setting);
         }
 
         private static string? FindRefusedSetting(IDictionary instance, string? path, bool isCimInstance)
@@ -209,7 +209,7 @@ namespace DSCParser.CSharp
                     {
                         AppendSingleQuoted(strValue);
                     }
-                    // Only a string that is entirely a variable reference is emitted bare
+                    // Only a string that is entirely a variable reference is written bare
                     else if (strValue.Length > 1 && strValue[0] == '$' && BareVariableReferenceRegex.IsMatch(strValue))
                     {
                         _ = _text.Append(strValue);

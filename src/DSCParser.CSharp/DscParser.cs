@@ -380,14 +380,14 @@ namespace DSCParser.CSharp
         /// </summary>
         public static string ConvertFromDscObject(IEnumerable<Hashtable> dscResources, int childLevel = 0)
         {
-            return new DscConfigurationEmitter(Environment.NewLine, isLiteralOnly: false, writesNestedResourceName: true)
+            return new DscConfigurationWriter(Environment.NewLine, isLiteralOnly: false, writesNestedResourceName: true)
                 .Write(dscResources, childLevel);
         }
 
         /// <summary>
         /// Converts DSC objects back to DSC configuration text without a ResourceName line inside a block
         /// </summary>
-        public static DscEmitResult ConvertFromDscObject(IEnumerable<Hashtable> dscResources, DscEmitOptions options, int childLevel = 0)
+        public static DscWriteResult ConvertFromDscObject(IEnumerable<Hashtable> dscResources, DscWriteOptions options, int childLevel = 0)
         {
             List<Hashtable> resources = [.. dscResources];
 
@@ -395,15 +395,15 @@ namespace DSCParser.CSharp
             {
                 foreach (Hashtable resource in resources)
                 {
-                    if (DscConfigurationEmitter.FindLiteralRefusal(resource) is { } refusal)
+                    if (DscConfigurationWriter.FindLiteralRefusal(resource) is { } refusal)
                     {
-                        return DscEmitResult.Refused(refusal);
+                        return DscWriteResult.Refused(refusal);
                     }
                 }
             }
 
-            return DscEmitResult.Success(
-                new DscConfigurationEmitter(options.NewLine, options.IsLiteralOnly, writesNestedResourceName: false)
+            return DscWriteResult.Success(
+                new DscConfigurationWriter(options.NewLine, options.IsLiteralOnly, writesNestedResourceName: false)
                     .Write(resources, childLevel));
         }
 

@@ -548,9 +548,9 @@ public class DscParserPrivateMethodTests
     {
         Hashtable resource = new() { ["ResourceName"] = "Contoso", ["ResourceInstanceName"] = "A", ["Ratio"] = 3.14m };
 
-        string emitted = DscParser.ConvertFromDscObject([resource]);
+        string written = DscParser.ConvertFromDscObject([resource]);
 
-        Assert.Matches(@"\n    Ratio +=\s3\.14\r?\n", emitted);
+        Assert.Matches(@"\n    Ratio +=\s3\.14\r?\n", written);
     }
 
     [Fact]

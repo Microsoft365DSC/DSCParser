@@ -5,10 +5,10 @@ namespace DSCParser.CSharp
     /// <summary>
     /// Options for writing DSC objects as configuration text
     /// </summary>
-    public sealed class DscEmitOptions
+    public sealed class DscWriteOptions
     {
         /// <summary>
-        /// Gets or sets whether code in a string becomes a single-quoted literal and a value no literal holds refuses the emit
+        /// Gets or sets whether code in a string becomes a single-quoted literal and a value no literal holds refuses the write
         /// </summary>
         public bool IsLiteralOnly { get; set; }
 
@@ -19,11 +19,11 @@ namespace DSCParser.CSharp
     }
 
     /// <summary>
-    /// Configuration text, or the refusal that stopped the emit
+    /// Configuration text, or the refusal that stopped the write
     /// </summary>
-    public sealed class DscEmitResult
+    public sealed class DscWriteResult
     {
-        private DscEmitResult(string configuration, DscEmitRefusal? refusal)
+        private DscWriteResult(string configuration, DscWriteRefusal? refusal)
         {
             Configuration = configuration;
             Refusal = refusal;
@@ -35,21 +35,21 @@ namespace DSCParser.CSharp
         public string Configuration { get; }
 
         /// <summary>
-        /// Null when the emit succeeded
+        /// Null when the write succeeded
         /// </summary>
-        public DscEmitRefusal? Refusal { get; }
+        public DscWriteRefusal? Refusal { get; }
 
-        internal static DscEmitResult Success(string configuration) => new(configuration, null);
+        internal static DscWriteResult Success(string configuration) => new(configuration, null);
 
-        internal static DscEmitResult Refused(DscEmitRefusal refusal) => new(string.Empty, refusal);
+        internal static DscWriteResult Refused(DscWriteRefusal refusal) => new(string.Empty, refusal);
     }
 
     /// <summary>
     /// The resource and setting no literal can hold
     /// </summary>
-    public sealed class DscEmitRefusal
+    public sealed class DscWriteRefusal
     {
-        internal DscEmitRefusal(string? resourceName, string? instanceName, string? setting)
+        internal DscWriteRefusal(string? resourceName, string? instanceName, string? setting)
         {
             ResourceName = resourceName;
             InstanceName = instanceName;
