@@ -30,8 +30,8 @@ public class DscParserPrivateMethodTests
         ?? throw new InvalidOperationException("GetModulesToLoad method not found");
 
     private static readonly MethodInfo _removeImportDscResourceStatements =
-        typeof(DscParser).GetMethod("RemoveImportDscResourceStatements", BindingFlags.NonPublic | BindingFlags.Static)
-        ?? throw new InvalidOperationException("RemoveImportDscResourceStatements method not found");
+        typeof(DscParser).GetMethod("BlankImportDscResourceStatements", BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("BlankImportDscResourceStatements method not found");
 
     private static readonly MethodInfo _registerKeywords =
         typeof(DscParser).GetMethod("RegisterKeywords", BindingFlags.NonPublic | BindingFlags.Static)
@@ -253,10 +253,10 @@ public class DscParserPrivateMethodTests
 
     #endregion
 
-    #region RemoveImportDscResourceStatements
+    #region BlankImportDscResourceStatements
 
     [Fact]
-    public void RemoveImportDscResourceStatements_ShouldStripEveryStatement()
+    public void BlankImportDscResourceStatements_ShouldBlankEveryStatementKeepingItsLength()
     {
         var content = """
             Import-DscResource -ModuleName Foo
@@ -267,7 +267,8 @@ public class DscParserPrivateMethodTests
         var result = (string)_removeImportDscResourceStatements.Invoke(null, [content])!;
 
         Assert.DoesNotContain("Import-DscResource", result);
-        Assert.Contains("Configuration Bar", result);
+        Assert.Equal(content.Length, result.Length);
+        Assert.Equal(content.IndexOf("Configuration Bar", StringComparison.Ordinal), result.IndexOf("Configuration Bar", StringComparison.Ordinal));
     }
 
     #endregion

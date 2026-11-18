@@ -23,6 +23,9 @@ namespace DSCParser.CSharp
     {
         private static readonly Dictionary<string, DscResourceInfo> _dscResources = new(StringComparer.OrdinalIgnoreCase);
 
+        [ThreadStatic]
+        private static ParseScope? t_scope;
+
         private static readonly Regex ImportDscResourceVersionRegex = new(
             @"(import-dscresource\b[^\n]*?)\s+-moduleversion\s+(?:""[^""]*""|'[^']*'|\S+)([^\n]*)",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -214,6 +217,22 @@ namespace DSCParser.CSharp
         /// </summary>
         public static List<DscResourceInstance> ConvertToDscObject(string? path = null, string content = "", DscParseOptions? options = null, List<object>? dscResources = null)
         {
+            return Parse(path, content, options, dscResources).Resources;
+        }
+
+        /// <summary>
+        /// Converts DSC configuration content and lists the Node statements the conversion passed over
+        /// </summary>
+        public static DscParseResult ParseConfiguration(string content, DscParseOptions? options = null, List<object>? dscResources = null)
+        {
+            (List<DscResourceInstance> resources, List<DscSkippedStatement> skippedStatements) = Parse(null, content, options, dscResources);
+
+            return new DscParseResult(resources, skippedStatements);
+        }
+
+        private static (List<DscResourceInstance> Resources, List<DscSkippedStatement> SkippedStatements) Parse(
+            string? path, string content, DscParseOptions? options, List<object>? dscResources)
+        {
             options ??= new DscParseOptions();
 
             if (_dscResources.Count == 0 && dscResources == null)
@@ -250,10 +269,27 @@ namespace DSCParser.CSharp
             string dscContent = string.IsNullOrEmpty(content) ? File.ReadAllText(path!) : content;
             string errorPrefix = string.IsNullOrEmpty(path) ? string.Empty : $"{path} - ";
 
-            if (options.UseRegisteredKeywords)
+            ParseScope? outerScope = t_scope;
+            ParseScope scope = new(dscContent);
+            t_scope = scope;
+            try
             {
-                return ConvertUsingRegisteredKeywords(dscContent, errorPrefix, options);
+                List<DscResourceInstance> resources = options.UseRegisteredKeywords
+                    ? ConvertUsingRegisteredKeywords(dscContent, errorPrefix, options)
+                    : ConvertUsingModules(dscContent, errorPrefix, options, dscResourcesConverted);
+
+                return (resources, scope.SkippedStatements);
             }
+            finally
+            {
+                t_scope = outerScope;
+            }
+        }
+
+        private static List<DscResourceInstance> ConvertUsingModules(
+            string dscContent, string errorPrefix, DscParseOptions options, List<DscResourceInfo> dscResourcesConverted)
+        {
+            string parseContent = BlankImportDscResourceStatements(dscContent);
 
             HashSet<string> referencedModules = new(StringComparer.OrdinalIgnoreCase);
             foreach (DscResourceInfo resource in dscResourcesConverted)
@@ -283,7 +319,6 @@ namespace DSCParser.CSharp
             {
                 RegisterKeywords(modulesToLoad, errorPrefix);
                 DscKeywordRegistry.MaterializeKeywordTable();
-                string parseContent = RemoveImportDscResourceStatements(dscContent);
                 ast = Parser.ParseInput(parseContent, out tokens, out parseErrors);
                 configAst = FindConfigurationAst(ast);
 
@@ -513,9 +548,10 @@ namespace DSCParser.CSharp
             return modulesToLoad;
         }
 
-        private static string RemoveImportDscResourceStatements(string content)
+        // Spaces keep the offset of every later character equal to the content's.
+        private static string BlankImportDscResourceStatements(string content)
         {
-            return ImportDscResourceStatementRegex.Replace(content, string.Empty);
+            return ImportDscResourceStatementRegex.Replace(content, statement => new string(' ', statement.Length));
         }
 
         private static void RegisterKeywords(List<ModuleReference> modulesToLoad, string errorPrefix)
@@ -605,6 +641,11 @@ namespace DSCParser.CSharp
             tokens = repairedTokens;
             parseErrors = repairedErrors;
 
+            if (t_scope is not null)
+            {
+                t_scope.InsertedOffsets = FindInsertedOffsets(content, repaired);
+            }
+
             ReportWarning(
                 $"{errorPrefix}Quoted {repairedCount} unquoted value(s) that PowerShell cannot parse as an expression, " +
                 "such as a GUID substituted for a variable reference. They were converted as strings.");
@@ -648,6 +689,81 @@ namespace DSCParser.CSharp
             return result;
         }
 
+        // Every character of the content reappears in order between the inserted quotes.
+        private static List<int> FindInsertedOffsets(string content, string repaired)
+        {
+            List<int> inserted = [];
+            int read = 0;
+            for (int offset = 0; offset < repaired.Length; offset++)
+            {
+                if (read < content.Length && content[read] == repaired[offset])
+                {
+                    read++;
+                }
+                else
+                {
+                    inserted.Add(offset);
+                }
+            }
+
+            return inserted;
+        }
+
+        // The extent of a keyword statement ends before the closing brace of its body.
+        private static DscResourceExtent BuildBlockExtent(DynamicKeywordStatementAst resource)
+        {
+            return BuildExtent(resource.Extent, resource.CommandElements[resource.CommandElements.Count - 1].Extent);
+        }
+
+        private static DscResourceExtent BuildExtent(IScriptExtent first, IScriptExtent last)
+        {
+            return new DscResourceExtent(
+                MapToContent(first.StartOffset), MapToContent(last.EndOffset), first.StartLineNumber, last.EndLineNumber);
+        }
+
+        private static int MapToContent(int offset)
+        {
+            List<int>? inserted = t_scope?.InsertedOffsets;
+            if (inserted is null)
+            {
+                return offset;
+            }
+
+            int before = 0;
+            while (before < inserted.Count && inserted[before] < offset)
+            {
+                before++;
+            }
+
+            return offset - before;
+        }
+
+        private static void RecordSkippedStatement(
+            DscSkipReason reason, DscResourceExtent extent, string? resourceName, string? instanceName)
+        {
+            if (t_scope is not { } scope)
+            {
+                return;
+            }
+
+            string text = scope.Content.Substring(extent.StartOffset, extent.EndOffset - extent.StartOffset);
+            scope.SkippedStatements.Add(new DscSkippedStatement(reason, text, extent, resourceName, instanceName));
+        }
+
+        private sealed class ParseScope
+        {
+            public ParseScope(string content)
+            {
+                Content = content;
+            }
+
+            public string Content { get; }
+
+            public List<DscSkippedStatement> SkippedStatements { get; } = [];
+
+            public List<int>? InsertedOffsets { get; set; }
+        }
+
         private readonly struct ModuleReference(string name, Version? version)
         {
             public string Name { get; } = name;
@@ -672,7 +788,7 @@ namespace DSCParser.CSharp
                     "No keywords are registered. Call DscKeywordRegistry.RegisterFromSchemaCache before parsing with UseRegisteredKeywords.");
             }
 
-            string content = RemoveImportDscResourceStatements(dscContent);
+            string content = BlankImportDscResourceStatements(dscContent);
             string? configurationBody = FindConfigurationBody(content);
             string body = configurationBody ?? content;
 
@@ -1014,6 +1130,7 @@ namespace DSCParser.CSharp
             {
                 ReportWarning(
                     $"Resource '{resourceType}' (instance '{resourceInstanceName}') was not found among the loaded DSC resources and was omitted from the converted configuration.");
+                RecordSkippedStatement(DscSkipReason.UnloadedResource, BuildBlockExtent(resource), resourceType, resourceInstanceName);
                 return null;
             }
 
@@ -1029,7 +1146,8 @@ namespace DSCParser.CSharp
             {
                 ResourceName = resourceType,
                 ResourceInstanceName = resourceInstanceName,
-                Properties = properties
+                Properties = properties,
+                Extent = BuildBlockExtent(resource)
             };
         }
 
@@ -1047,6 +1165,7 @@ namespace DSCParser.CSharp
                 command.CommandElements[0] is not StringConstantExpressionAst resourceName)
             {
                 ReportWarning($"Skipped an unrecognized statement in the DSC configuration: {statements[index].Extent.Text}");
+                RecordSkippedStatement(DscSkipReason.UnrecognizedStatement, BuildExtent(statements[index].Extent, statements[index].Extent), null, null);
                 return 0;
             }
 
@@ -1058,7 +1177,11 @@ namespace DSCParser.CSharp
                 $"Resource '{resourceName.Value}' (instance '{instanceName}') could not be resolved against the imported module(s) " +
                 "and was omitted from the converted configuration. It was likely removed in the installed module version.");
 
-            return command.CommandElements.Count == 2 && IsDetachedResourceBody(statements, index + 1) ? 1 : 0;
+            int consumed = command.CommandElements.Count == 2 && IsDetachedResourceBody(statements, index + 1) ? 1 : 0;
+            RecordSkippedStatement(
+                DscSkipReason.UndefinedResource, BuildExtent(statements[index].Extent, statements[index + consumed].Extent), resourceName.Value, instanceName);
+
+            return consumed;
         }
 
         private static bool IsDetachedResourceBody(ReadOnlyCollection<StatementAst> statements, int index)

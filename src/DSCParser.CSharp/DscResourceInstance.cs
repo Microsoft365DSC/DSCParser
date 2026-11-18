@@ -26,6 +26,11 @@ namespace DSCParser.CSharp
         public Dictionary<string, object?> Properties { get; set; } = [];
 
         /// <summary>
+        /// Null when the instance was not read from configuration text
+        /// </summary>
+        public DscResourceExtent? Extent { get; set; }
+
+        /// <summary>
         /// Adds or updates a property value
         /// </summary>
         public void AddProperty(string key, object? value) => Properties[key] = value;
