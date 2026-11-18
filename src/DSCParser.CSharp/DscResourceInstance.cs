@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using DSCParser.PSDSC;
 
 namespace DSCParser.CSharp
 {
@@ -24,6 +25,11 @@ namespace DSCParser.CSharp
         /// Gets or sets the parsed properties of this instance
         /// </summary>
         public Dictionary<string, object?> Properties { get; set; } = [];
+
+        /// <summary>
+        /// Null when the instance was not read from configuration text
+        /// </summary>
+        public DscResourceExtent? Extent { get; set; }
 
         /// <summary>
         /// Adds or updates a property value
@@ -110,5 +116,15 @@ namespace DSCParser.CSharp
         /// what the caller registered is the complete set of resources the parse can resolve.
         /// </remarks>
         public bool UseRegisteredKeywords { get; set; } = false;
+
+        /// <summary>
+        /// Gets or sets the only keywords the parse resolves, with no process-wide state read or written
+        /// </summary>
+        public DscKeywordSet? Keywords { get; set; }
+
+        /// <summary>
+        /// Gets or sets the receiver of this parse's warnings in place of DscParser.WarningSink
+        /// </summary>
+        public Action<string>? WarningSink { get; set; }
     }
 }
