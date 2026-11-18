@@ -203,7 +203,7 @@ namespace DSCParser.CSharp
         }
 
         /// <summary>
-        /// Converts a DSC configuration file or content to DSC objects
+        /// Converts a DSC configuration file or content to DSC objects.
         /// </summary>
         public static List<DscResourceInstance> ConvertToDscObject(string? path = null, string content = "", DscParseOptions? options = null, List<object>? dscResources = null)
         {
@@ -211,7 +211,7 @@ namespace DSCParser.CSharp
         }
 
         /// <summary>
-        /// Converts DSC configuration content and lists the Node statements the conversion passed over
+        /// Converts DSC configuration content and lists the Node statements the conversion passed over.
         /// </summary>
         public static DscParseResult ParseConfiguration(string content, DscParseOptions? options = null, List<object>? dscResources = null)
         {
@@ -346,7 +346,6 @@ namespace DSCParser.CSharp
                 throw new InvalidOperationException("No Configuration definition found in the DSC content");
             }
 
-            // Get resource instances
             List<DscResourceInstance> resourceInstances = GetResourceInstances(configAst, options);
 
             // Add comment metadata if requested
@@ -376,7 +375,7 @@ namespace DSCParser.CSharp
         }
 
         /// <summary>
-        /// Converts DSC objects back to DSC configuration text
+        /// Converts DSC objects back to DSC configuration text.
         /// </summary>
         public static string ConvertFromDscObject(IEnumerable<Hashtable> dscResources, int childLevel = 0)
         {
@@ -385,7 +384,7 @@ namespace DSCParser.CSharp
         }
 
         /// <summary>
-        /// Converts DSC objects back to DSC configuration text without a ResourceName line inside a block
+        /// Converts DSC objects back to DSC configuration text without a ResourceName line inside a block.
         /// </summary>
         public static DscWriteResult ConvertFromDscObject(IEnumerable<Hashtable> dscResources, DscWriteOptions options, int childLevel = 0)
         {
@@ -395,9 +394,9 @@ namespace DSCParser.CSharp
             {
                 foreach (Hashtable resource in resources)
                 {
-                    if (DscConfigurationWriter.FindLiteralRefusal(resource) is { } refusal)
+                    if (DscConfigurationWriter.FindLiteralError(resource) is { } error)
                     {
-                        return DscWriteResult.Refused(refusal);
+                        return DscWriteResult.Failed(error);
                     }
                 }
             }
@@ -617,7 +616,7 @@ namespace DSCParser.CSharp
             return true;
         }
 
-        // Matches a line holding nothing but a single bare token, either as the right-hand side of a
+        // Matches a line containing only a single bare token, either as the right-hand side of a
         // property assignment or as a standalone array element. Requiring a single token keeps
         // statements such as "Configuration Name" out of the repair.
         private static readonly Regex BareValueLineRegex = new(

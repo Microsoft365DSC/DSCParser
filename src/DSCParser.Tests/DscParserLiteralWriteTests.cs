@@ -34,7 +34,7 @@ public class DscParserLiteralWriteTests
 
         DscWriteResult result = DscParser.ConvertFromDscObject([resource], LiteralOptions);
 
-        Assert.Null(result.Refusal);
+        Assert.Null(result.Error);
         Assert.Equal(
             [
                 "ContosoPolicy 'Corp \"main\"'",
@@ -77,7 +77,7 @@ public class DscParserLiteralWriteTests
         Assert.Equal(legacy.Replace("            ResourceName         = \"ContosoPolicy\"" + Environment.NewLine, string.Empty), written.Configuration);
     }
 
-    public static TheoryData<string, object, string?, string?> RefusedResources() => new()
+    public static TheoryData<string, object, string?, string?> UnwritableResources() => new()
     {
         { "ResourceInstanceName", "first\nsecond", "first\nsecond", null },
         { "ResourceName", "Contoso-Policy", "Corp", null },
@@ -89,17 +89,17 @@ public class DscParserLiteralWriteTests
     };
 
     [Theory]
-    [MemberData(nameof(RefusedResources))]
-    public void ConvertFromDscObject_InLiteralMode_ShouldRefuseAValueNoLiteralHolds(
-        string key, object value, string? refusedInstance, string? refusedSetting)
+    [MemberData(nameof(UnwritableResources))]
+    public void ConvertFromDscObject_InLiteralMode_ShouldReturnAnErrorForAValueNoLiteralHolds(
+        string key, object value, string? unwritableInstance, string? unwritableSetting)
     {
         Hashtable resource = new() { ["ResourceName"] = "ContosoPolicy", ["ResourceInstanceName"] = "Corp" };
         resource[key] = value;
 
         DscWriteResult result = DscParser.ConvertFromDscObject([resource], LiteralOptions);
 
-        Assert.NotNull(result.Refusal);
-        Assert.Equal((refusedInstance, refusedSetting), (result.Refusal.InstanceName, result.Refusal.Setting));
+        Assert.NotNull(result.Error);
+        Assert.Equal((unwritableInstance, unwritableSetting), (result.Error.InstanceName, result.Error.Setting));
         Assert.Empty(result.Configuration);
     }
 

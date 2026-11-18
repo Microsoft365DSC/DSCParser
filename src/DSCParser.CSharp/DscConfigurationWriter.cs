@@ -17,10 +17,10 @@ namespace DSCParser.CSharp
 
         private const string CimTypeKey = "CIMInstance";
 
-        // Matches a string that is syntactically nothing but a variable reference,
-        // optionally scoped and with member access: $name, $scope:name, $config.Credential.
-        // Anything else that merely starts with '$' (e.g. "$OrganizationName\Default")
-        // must be written quoted or the generated text does not reparse.
+        // Matches a string that is only a variable reference, scoped or with member access
+        // like $name, $scope:name, $config.Credential. Anything else that starts with '$'
+        // (e.g. "$OrganizationName\Default") must be written quoted or the generated text
+        // does not reparse.
         private static readonly Regex BareVariableReferenceRegex = new(
             @"^\$(?:\w+:)?\w+(?:\.\w+)*$",
             RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -48,25 +48,25 @@ namespace DSCParser.CSharp
             return _text.ToString();
         }
 
-        internal static DscWriteRefusal? FindLiteralRefusal(IDictionary resource)
+        internal static DscWriteError? FindLiteralError(IDictionary resource)
         {
             string? type = ReadText(resource, ResourceNameKey);
             string? instance = ReadText(resource, InstanceNameKey);
 
             if (type is null || !DscValueText.IsIdentifier(type) || instance is null || DscValueText.HasLineBreak(instance))
             {
-                return new DscWriteRefusal(type, instance, null);
+                return new DscWriteError(type, instance, null);
             }
 
             // A setting named CIMInstance would be written as the block header.
             string? setting = resource.Contains(CimTypeKey)
                 ? CimTypeKey
-                : FindRefusedSetting(resource, path: null, isCimInstance: false);
+                : FindUnwritableSetting(resource, path: null, isCimInstance: false);
 
-            return setting is null ? null : new DscWriteRefusal(type, instance, setting);
+            return setting is null ? null : new DscWriteError(type, instance, setting);
         }
 
-        private static string? FindRefusedSetting(IDictionary instance, string? path, bool isCimInstance)
+        private static string? FindUnwritableSetting(IDictionary instance, string? path, bool isCimInstance)
         {
             foreach (DictionaryEntry entry in instance)
             {
@@ -89,16 +89,16 @@ namespace DSCParser.CSharp
                     return setting;
                 }
 
-                if (FindRefusedValue(entry.Value, setting) is { } refused)
+                if (FindUnwritableValue(entry.Value, setting) is { } unwritable)
                 {
-                    return refused;
+                    return unwritable;
                 }
             }
 
             return null;
         }
 
-        private static string? FindRefusedValue(object? value, string setting)
+        private static string? FindUnwritableValue(object? value, string setting)
         {
             switch (value)
             {
@@ -107,15 +107,15 @@ namespace DSCParser.CSharp
 
                 case IDictionary nested:
                     return ReadText(nested, CimTypeKey) is { } cimType && DscValueText.IsIdentifier(cimType)
-                        ? FindRefusedSetting(nested, setting, isCimInstance: true)
+                        ? FindUnwritableSetting(nested, setting, isCimInstance: true)
                         : setting;
 
                 case IEnumerable items:
                     foreach (object? item in items)
                     {
-                        if (FindRefusedValue(item, setting) is { } refused)
+                        if (FindUnwritableValue(item, setting) is { } unwritable)
                         {
-                            return refused;
+                            return unwritable;
                         }
                     }
 
@@ -132,7 +132,7 @@ namespace DSCParser.CSharp
             dictionary.Contains(key) ? dictionary[key] as string : null;
 
         /// <summary>
-        /// Nested hashtables and arrays recurse into the same builder, so no intermediate strings are
+        /// Nested hashtables and arrays recurse into the same builder. No intermediate strings are
         /// produced per nesting level.
         /// </summary>
         private void AppendDscObjects(IEnumerable<IDictionary> dscResources, int childLevel)
@@ -357,8 +357,8 @@ namespace DSCParser.CSharp
         }
 
         /// <summary>
-        /// Removes the leading indentation of the first rendered line when that line opens a block, so
-        /// the nested object starts directly after the "= " of its property assignment.
+        /// Removes the leading indentation of the first rendered line when that line opens a block.
+        /// Nested objects start directly after the "= " of their property assignment.
         /// </summary>
         private void StripIndentOfOpeningLine(int contentStart)
         {

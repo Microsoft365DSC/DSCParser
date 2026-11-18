@@ -89,10 +89,10 @@ public class DscParserKeywordSetTests : IDisposable
             options: new DscParseOptions { Keywords = ContosoKeywords },
             dscResources: [new DscResourceInfo { Name = "ContosoPolicy", ResourceType = "ContosoPolicy" }]);
 
-        InvalidOperationException refused = Assert.Throws<InvalidOperationException>(() =>
+        InvalidOperationException thrown = Assert.Throws<InvalidOperationException>(() =>
             DscParser.ConvertToDscObject(content: "Configuration Empty { }", options: new DscParseOptions { UseRegisteredKeywords = true }));
 
-        Assert.Contains("No DSC resources loaded", refused.Message, StringComparison.Ordinal);
+        Assert.Contains("No DSC resources loaded", thrown.Message, StringComparison.Ordinal);
     }
 
     private static DscKeywordSet BuildKeywords(string resource) => DscKeywordSet.FromSchemaCache(

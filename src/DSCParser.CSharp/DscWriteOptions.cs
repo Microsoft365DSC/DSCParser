@@ -8,7 +8,7 @@ namespace DSCParser.CSharp
     public sealed class DscWriteOptions
     {
         /// <summary>
-        /// Gets or sets whether code in a string becomes a single-quoted literal and a value no literal holds refuses the write
+        /// Gets or sets whether code in a string becomes a single-quoted literal and a value no literal holds fails the write
         /// </summary>
         public bool IsLiteralOnly { get; set; }
 
@@ -19,37 +19,37 @@ namespace DSCParser.CSharp
     }
 
     /// <summary>
-    /// Configuration text, or the refusal that stopped the write
+    /// Configuration text, or the error that stopped the write
     /// </summary>
     public sealed class DscWriteResult
     {
-        private DscWriteResult(string configuration, DscWriteRefusal? refusal)
+        private DscWriteResult(string configuration, DscWriteError? error)
         {
             Configuration = configuration;
-            Refusal = refusal;
+            Error = error;
         }
 
         /// <summary>
-        /// Empty when refused
+        /// Empty when the write failed
         /// </summary>
         public string Configuration { get; }
 
         /// <summary>
         /// Null when the write succeeded
         /// </summary>
-        public DscWriteRefusal? Refusal { get; }
+        public DscWriteError? Error { get; }
 
         internal static DscWriteResult Success(string configuration) => new(configuration, null);
 
-        internal static DscWriteResult Refused(DscWriteRefusal refusal) => new(string.Empty, refusal);
+        internal static DscWriteResult Failed(DscWriteError error) => new(string.Empty, error);
     }
 
     /// <summary>
     /// The resource and setting no literal can hold
     /// </summary>
-    public sealed class DscWriteRefusal
+    public sealed class DscWriteError
     {
-        internal DscWriteRefusal(string? resourceName, string? instanceName, string? setting)
+        internal DscWriteError(string? resourceName, string? instanceName, string? setting)
         {
             ResourceName = resourceName;
             InstanceName = instanceName;
@@ -67,7 +67,7 @@ namespace DSCParser.CSharp
         public string? InstanceName { get; }
 
         /// <summary>
-        /// The dotted path of the setting, null when the type or instance name is refused
+        /// The dotted path of the setting, null when the type or instance name cannot be written
         /// </summary>
         public string? Setting { get; }
     }
